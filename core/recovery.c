@@ -254,7 +254,7 @@ static int recovery_handle_erase(eos_slot_t slot)
 
 /**
  * Return EOS_OK if a recovery write of `len` bytes at `offset` stays
- * inside the slot at `base`. Rejects wrap of base+offset.
+ * inside the slot at `base`. Rejects address wrap of the write range.
  * Used by the UART write handler and by host unit tests.
  */
 int eos_recovery_write_in_range(uint32_t base, uint32_t slot_size,
@@ -266,6 +266,8 @@ int eos_recovery_write_in_range(uint32_t base, uint32_t slot_size,
     if ((uint32_t)len > slot_size || offset > slot_size - (uint32_t)len)
         return EOS_ERR_INVALID;
     if (offset > UINT32_MAX - base)
+        return EOS_ERR_INVALID;
+    if ((uint32_t)len - 1u > UINT32_MAX - (base + offset))
         return EOS_ERR_INVALID;
     return EOS_OK;
 }
@@ -282,10 +284,10 @@ static int recovery_handle_write(eos_slot_t slot, uint32_t offset, uint16_t len)
     if (len > sizeof(buf))
         return recovery_send_nack();
 
-    /* offset/len come straight from the wire. The helper rejects a
-     * zero slot base, wrap of base+offset, and writes that run past
-     * the slot into boot-control, the other slot, or the boot log. */
-    if (eos_recovery_write_in_range(base, slot_size, offset, len) != EOS_OK)
+    /* offset/len come straight from the wire; without this check a
+     * recovery client can write past the slot boundary into the other
+     * slot, boot-control blocks, or the boot log. */
+    if (slot_size == 0 || (uint64_t)offset + len > (uint64_t)slot_size)
         return recovery_send_nack();
 
     recovery_send_ack();
@@ -310,6 +312,12 @@ static int recovery_handle_verify(eos_slot_t slot)
     eos_image_header_t hdr;
     int rc = eos_image_parse_header(addr, &hdr);
     if (rc != EOS_OK)
+        return recovery_send_nack();
+
+    uint32_t slot_size = eos_hal_slot_size(slot);
+    if (slot_size == 0 ||
+        hdr.hdr_size > slot_size ||
+        hdr.image_size > slot_size - hdr.hdr_size)
         return recovery_send_nack();
 
     /* eos_image_verify_integrity() adds hdr_size internally — pass base addr only */

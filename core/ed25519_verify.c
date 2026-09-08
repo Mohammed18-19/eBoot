@@ -30,6 +30,7 @@
 #include "eos_types.h"
 #include <string.h>
 
+
 /* ================================================================
  * Field arithmetic mod p = 2^255 - 19
  * ================================================================ */
@@ -286,6 +287,61 @@ static void scalarbase(gf r[4], const uint8_t *s)
     scalarmult(r, q, s);
 }
 
+/* The identity encodes as y = 1 with the sign bit clear. Takes a point rather
+ * than an encoding so both callers below can pass one directly. */
+static int point_is_identity(gf p[4])
+{
+    uint8_t encoded[32];
+    point_pack(encoded, p);
+
+    uint8_t diff = (uint8_t)(encoded[0] ^ 1U);
+    for (int i = 1; i < 32; i++)
+        diff |= encoded[i];
+    return diff == 0;
+}
+
+static void scalarbase(gf r[4], const uint8_t *s)
+{
+    gf q[4];
+    fe_copy16(q[0], BX);
+    fe_copy16(q[1], BY);
+    fe_copy16(q[2], gf1);
+    fe_mul(q[3], BX, BY);
+    scalarmult(r, q, s);
+}
+
+/* Reject a public key outside the prime-order subgroup.
+ *
+ * Decoding a point is not enough. Ed25519 has eight points of low order, and
+ * for any of them the verification equation can hold regardless of the
+ * message: an all-zero key with an all-zero signature verified against any
+ * content at all, which is not a weak signature but no signature.
+ *
+ * Two conditions, because neither alone is sufficient. [L]A = identity holds
+ * for every point whose order divides L -- including the identity itself,
+ * whose order is 1 -- so the identity must also be excluded explicitly.
+ *
+ * The scalar is derived from ORDER_L rather than written out a second time,
+ * so there is no separate constant to transcribe wrongly: a mistyped L would
+ * reject valid keys, and only in the field.
+ *
+ * The key arrives negated from unpackneg(). [L](-A) = -[L]A and the identity
+ * is its own negation, so neither condition is affected by the sign.
+ */
+static int public_key_is_valid_subgroup(gf public_key[4])
+{
+    uint8_t order_l[32];
+    gf q[4], multiple[4];
+
+    for (int i = 0; i < 32; i++)
+        order_l[i] = (uint8_t)ORDER_L[i];
+    for (int i = 0; i < 4; i++)
+        fe_copy16(q[i], public_key[i]);
+
+    scalarmult(multiple, q, order_l);
+    return point_is_identity(multiple) && !point_is_identity(public_key);
+}
+
 /* Decode a compressed point into -P (the negation is what verification wants). */
 static int unpackneg(gf r[4], const uint8_t p[32])
 {
@@ -416,6 +472,8 @@ int eos_ed25519_verify(const uint8_t signature[64],
     gf A[4];
     if (unpackneg(A, public_key) != EOS_OK)
         return EOS_ERR_SIGNATURE;
+    if (!public_key_is_valid_subgroup(A))
+        return EOS_ERR_SIGNATURE;
 
     /* k = SHA-512(R || A || M) mod L */
     eos_sha512_ctx_t ctx;
@@ -427,21 +485,21 @@ int eos_ed25519_verify(const uint8_t signature[64],
     eos_sha512_final(&ctx, k);
     reduce_hash(k);
 
-    /* Recompute R' = [S]B + [k](-A). A is already negated by unpackneg(), so
-     * the sum is R' rather than a difference. RFC 8032 permits the cheaper
-     * "compare encodings" check in place of a group-element comparison. */
-    gf lhs[4], rhs[4];
-    scalarmult(lhs, A, k);
-    scalarbase(rhs, &signature[32]);
-    point_add(lhs, (const gf *)rhs);
+    /* Compute [k](-A) + [S]B, which equals R for a valid signature. */
+    gf kA[4], sB[4];
+    scalarmult(kA, A, k);
+    scalarbase(sB, &signature[32]);
+    point_add(kA, (const gf *)sB);
 
-    uint8_t rcheck[32];
-    point_pack(rcheck, lhs);
+    uint8_t recovered[32];
+    point_pack(recovered, kA);
 
-    /* Constant-time comparison against R. */
     uint8_t diff = 0;
-    for (int i = 0; i < 32; i++)
-        diff |= (uint8_t)(rcheck[i] ^ signature[i]);
+    for (int i = 0; i < 32; i++) diff |= (uint8_t)(recovered[i] ^ signature[i]);
+
+    /* Wipe the challenge scalar rather than leave it in boot-path memory. */
+    memset(k, 0, sizeof(k));
+
 
     return diff == 0 ? EOS_OK : EOS_ERR_SIGNATURE;
 }
