@@ -204,6 +204,12 @@ add_executable(eboot_test_fdt_loader unit/test_fdt_loader.c)
 target_link_libraries(eboot_test_fdt_loader PRIVATE eboot_core)
 add_test(NAME test_fdt_loader COMMAND eboot_test_fdt_loader)
 
+# --- test_eos_sign_boot_path: the tool's real output through the real parser ---
+add_executable(eboot_test_eos_sign_boot_path unit/test_eos_sign_boot_path.c)
+target_link_libraries(eboot_test_eos_sign_boot_path PRIVATE eboot_core)
+target_include_directories(eboot_test_eos_sign_boot_path PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME test_eos_sign_boot_path COMMAND eboot_test_eos_sign_boot_path)
+
 # --- Valgrind test targets ---
 #
 # The list is derived from the suites registered above, not written out again.
