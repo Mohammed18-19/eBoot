@@ -47,6 +47,36 @@ static bool fdt_block_in_bounds(uint32_t off, uint32_t len, uint32_t totalsize)
     return off <= totalsize - len;
 }
 
+/* Does a device tree node name match one path component?
+ *
+ * Real node names carry a unit address -- `uart@40011000`, `serial@10000000`
+ * -- while a path is usually written without one. Exact string equality meant
+ * /soc/uart resolved only against trees whose peripherals happen to be named
+ * without an address, which is to say against hand-built test blobs and not
+ * against any actual DTB. (/ and /chosen were unaffected: by convention they
+ * carry no unit address, which is why the bootargs path this parser exists to
+ * serve kept working and the gap went unnoticed.)
+ *
+ * A component containing no '@' matches the name up to its '@', so both
+ * /soc/uart and /soc/uart@40011000 resolve. A component that does contain one
+ * is compared in full, so an explicit address still selects exactly the node
+ * asked for -- which matters when a tree has several of the same peripheral.
+ */
+static bool fdt_name_matches(const char *name, const char *comp,
+                             uint32_t comp_len)
+{
+    uint32_t full = (uint32_t)strlen(name);
+
+    if (memchr(comp, '@', comp_len) != NULL) {
+        return full == comp_len && strncmp(name, comp, comp_len) == 0;
+    }
+
+    const char *at = memchr(name, '@', full);
+    uint32_t bare = at ? (uint32_t)(at - name) : full;
+
+    return bare == comp_len && strncmp(name, comp, comp_len) == 0;
+}
+
 int eos_fdt_validate(const void *fdt_blob, uint32_t avail)
 {
     if (!fdt_blob) return -1;
@@ -130,12 +160,32 @@ int eos_fdt_get_prop(const void *fdt, uint32_t fdt_len,
     int target_depth = -1;
     bool in_target = false;
 
-    /* Count slashes to determine target depth */
-    int path_depth = 0;
-    for (const char *p = node_path; *p; p++) {
-        if (*p == '/') path_depth++;
+    /* Split the path into components. The old code counted slashes and
+     * compared only the last component, which was wrong twice over: the
+     * root node already occupies depth 1, so "/chosen" looked for depth 1
+     * -- the root itself -- and never matched, leaving "/" the only path
+     * that resolved; and matching the last component alone meant
+     * "/soc/uart" would have accepted any node named "uart" at that depth,
+     * whatever its parent. */
+    const char *comp[FDT_MAX_PATH_DEPTH];
+    uint32_t comp_len[FDT_MAX_PATH_DEPTH];
+    int ncomp = 0;
+    for (const char *p = node_path; *p; ) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != '/') p++;
+        /* -8, not -1: -1 means a caller passed NULL, which is a programming
+         * error, while a path deeper than we track is input. A caller that
+         * cannot tell them apart cannot handle either correctly. */
+        if (ncomp >= FDT_MAX_PATH_DEPTH) return -8;
+        comp[ncomp] = start;
+        comp_len[ncomp] = (uint32_t)(p - start);
+        ncomp++;
     }
-    if (path_depth == 0) path_depth = 1;
+    /* The root is depth 1, so a path of n components ends at depth n + 1. */
+    const int target_path_depth = ncomp + 1;
+    int matched = 0;
 
     /* offset < struct_size only guarantees one byte; every read below wants
      * four or more, so each is checked for the width it actually takes. */
@@ -155,20 +205,25 @@ int eos_fdt_get_prop(const void *fdt, uint32_t fdt_len,
             if (offset > struct_size) return -6;
             depth++;
 
-            /* Check if this node matches the target path */
-            if (depth == path_depth) {
-                /* Simple check: compare last component */
-                const char *last_slash = strrchr(node_path, '/');
-                const char *target_name = last_slash ? last_slash + 1 : node_path;
-                if (strcmp(name, target_name) == 0 || target_name[0] == '\0') {
-                    in_target = true;
-                    target_depth = depth;
+            /* Advance along the requested path only while every ancestor
+             * has matched, so a node is found at its own path and not
+             * merely by its own name. */
+            if (depth >= 2 && matched == depth - 2 && depth - 2 < ncomp) {
+                uint32_t want = comp_len[depth - 2];
+                if (fdt_name_matches(name, comp[depth - 2], want)) {
+                    matched = depth - 1;
                 }
+            }
+            if (!in_target && depth == target_path_depth && matched == ncomp) {
+                in_target = true;
+                target_depth = depth;
             }
             break;
         }
         case FDT_END_NODE:
             if (in_target && depth == target_depth) in_target = false;
+            /* Leaving a node un-matches it for the branch we return to. */
+            if (matched >= depth - 1 && depth >= 2) matched = depth - 2;
             /* An unbalanced blob would drive depth negative and let a later
              * BEGIN_NODE match path_depth at the wrong nesting level. */
             if (depth == 0) return -6;
@@ -192,7 +247,17 @@ int eos_fdt_get_prop(const void *fdt, uint32_t fdt_len,
              * followed the blob into buf. */
             if (len > struct_size - offset) return -6;
 
-            if (in_target && strcmp(pname, prop_name) == 0) {
+            /* depth, not just in_target: in_target is cleared by the
+             * target's own END_NODE, so it stays true for the whole subtree
+             * and a property on a *child* was returned as the target's own.
+             * Real trees put properties before subnodes, so a property that
+             * is present on the target is still found first -- the bug bit
+             * when the target lacked it and "not found" became a silently
+             * wrong value from a nested node. depth is exactly target_depth
+             * for the target's own properties and target_depth + 1 or more
+             * inside any child. */
+            if (in_target && depth == target_depth &&
+                strcmp(pname, prop_name) == 0) {
                 /* Truncating and returning 0 told the caller it had the whole
                  * value. This path reads bootargs: a clipped string that
                  * reports success drops whatever sat at its end, and nothing

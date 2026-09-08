@@ -119,6 +119,98 @@ static void build_valid(blob_t *b, const char *value)
     put_be32((unsigned char *)&h->size_dt_strings, size_strings);
 }
 
+/* / { soc { uart { reg = <value>; }; }; decoy { }; }
+ *
+ * "uart" sits at depth 3 under "soc", and a second node named "uart" is
+ * placed under "decoy" so that matching by last component alone would find
+ * the wrong one. */
+static void build_nested(blob_t *b, const char *value, const char *decoy)
+{
+    memset(b, 0, sizeof(*b));
+    b->len = sizeof(fdt_header_t);
+    uint32_t off_struct = b->len;
+    uint32_t vlen = (uint32_t)strlen(value) + 1;
+    uint32_t dlen = (uint32_t)strlen(decoy) + 1;
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "");
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "decoy");
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "uart");
+    append_be32(b, FDT_PROP); append_be32(b, dlen); append_be32(b, 0);
+    append_padded(b, decoy);
+    append_be32(b, FDT_END_NODE);
+    append_be32(b, FDT_END_NODE);
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "soc");
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "uart");
+    append_be32(b, FDT_PROP); append_be32(b, vlen); append_be32(b, 0);
+    append_padded(b, value);
+    append_be32(b, FDT_END_NODE);
+    append_be32(b, FDT_END_NODE);
+
+    append_be32(b, FDT_END_NODE);
+    append_be32(b, FDT_END);
+    uint32_t size_struct = b->len - off_struct;
+
+    uint32_t off_strings = b->len;
+    append_padded(b, "reg");
+    uint32_t size_strings = b->len - off_strings;
+
+    fdt_header_t *h = (fdt_header_t *)b->bytes;
+    put_be32((unsigned char *)&h->magic, FDT_MAGIC);
+    put_be32((unsigned char *)&h->version, 17);
+    put_be32((unsigned char *)&h->last_comp_version, 16);
+    put_be32((unsigned char *)&h->totalsize, b->len);
+    put_be32((unsigned char *)&h->off_dt_struct, off_struct);
+    put_be32((unsigned char *)&h->size_dt_struct, size_struct);
+    put_be32((unsigned char *)&h->off_dt_strings, off_strings);
+    put_be32((unsigned char *)&h->size_dt_strings, size_strings);
+}
+
+/* Like build_nested, but with the unit addresses a real device tree carries.
+ * Exact-equality matching resolved nothing here, which is the case the PR's
+ * own headline example describes and could not do. */
+static void build_addressed(blob_t *b, const char *v0, const char *v1)
+{
+    memset(b, 0, sizeof(*b));
+    b->len = sizeof(fdt_header_t);
+    uint32_t off_struct = b->len;
+    uint32_t l0 = (uint32_t)strlen(v0) + 1;
+    uint32_t l1 = (uint32_t)strlen(v1) + 1;
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "");
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "soc");
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "uart@40011000");
+    append_be32(b, FDT_PROP); append_be32(b, l0); append_be32(b, 0);
+    append_padded(b, v0);
+    append_be32(b, FDT_END_NODE);
+
+    append_be32(b, FDT_BEGIN_NODE); append_padded(b, "uart@40004400");
+    append_be32(b, FDT_PROP); append_be32(b, l1); append_be32(b, 0);
+    append_padded(b, v1);
+    append_be32(b, FDT_END_NODE);
+
+    append_be32(b, FDT_END_NODE);
+    append_be32(b, FDT_END_NODE);
+    append_be32(b, FDT_END);
+    uint32_t size_struct = b->len - off_struct;
+
+    uint32_t off_strings = b->len;
+    append_padded(b, "reg");
+    uint32_t size_strings = b->len - off_strings;
+
+    fdt_header_t *h = (fdt_header_t *)b->bytes;
+    put_be32((unsigned char *)&h->magic, FDT_MAGIC);
+    put_be32((unsigned char *)&h->version, 17);
+    put_be32((unsigned char *)&h->last_comp_version, 16);
+    put_be32((unsigned char *)&h->totalsize, b->len);
+    put_be32((unsigned char *)&h->off_dt_struct, off_struct);
+    put_be32((unsigned char *)&h->size_dt_struct, size_struct);
+    put_be32((unsigned char *)&h->off_dt_strings, off_strings);
+    put_be32((unsigned char *)&h->size_dt_strings, size_strings);
+}
+
 static void set_field(blob_t *b, size_t field_offset, uint32_t v)
 {
     put_be32(b->bytes + field_offset, v);
@@ -400,6 +492,114 @@ static void test_an_unaligned_blob_parses(void)
     free(heap);
 }
 
+static void test_a_node_below_the_root_resolves(void)
+{
+    /* "/chosen" used to look for depth 1 -- the root -- so no path below
+     * the root ever resolved and only "/" worked.
+     *
+     * This assertion is also what proves the parent is matched, and that is
+     * load-bearing rather than incidental: build_nested emits "decoy" before
+     * "soc", so a matcher comparing only the last component would meet
+     * /decoy/uart first and return "decoy-uart". Getting "soc-uart" here
+     * means the ancestors were checked. */
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart", "reg", out, &len) == 0);
+    ASSERT(strcmp(out, "soc-uart") == 0);
+}
+
+static void test_each_uart_returns_its_own_value(void)
+{
+    /* Matching the last component alone would return decoy/uart's value
+     * for /soc/uart, whichever the walk reached first. */
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/decoy/uart", "reg", out, &len) == 0);
+    ASSERT(strcmp(out, "decoy-uart") == 0);
+}
+
+static void test_a_path_that_is_not_in_the_tree_is_not_found(void)
+{
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/spi", "reg", out, &len) != 0);
+    len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/nosuch/uart", "reg", out, &len) != 0);
+}
+
+static void test_a_deeper_path_than_the_tree_is_not_found(void)
+{
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart/child", "reg", out, &len) != 0);
+}
+
+/* The property arm used to test in_target alone, and in_target is only
+ * cleared by the target's own END_NODE -- so it stayed true through the whole
+ * subtree and a child's property came back as the parent's. /soc has no "reg"
+ * of its own; the correct answer is "not found", and what came back was
+ * /soc/uart's value. That is the same class of mistake this PR is named for:
+ * reading the wrong node's registers. */
+static void test_a_property_on_a_child_is_not_returned_as_the_parents(void)
+{
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc", "reg", out, &len) != 0);
+
+    /* and the child itself still resolves, so the guard is not just
+     * refusing everything below the root */
+    len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart", "reg", out, &len) == 0);
+    ASSERT(strcmp(out, "soc-uart") == 0);
+}
+
+/* A path deeper than FDT_MAX_PATH_DEPTH is input, not a programming error,
+ * and used to share -1 with "a caller passed NULL". */
+static void test_an_overlong_path_is_distinguishable_from_a_null_argument(void)
+{
+    blob_t b; build_nested(&b, "soc-uart", "decoy-uart");
+    char out[24]; uint32_t len = sizeof out;
+
+    char deep[128] = "";
+    for (int i = 0; i < 20; i++) strcat(deep, "/a");
+
+    ASSERT(get_prop_exact(&b, deep, "reg", out, &len) == -8);
+    len = sizeof out;
+    ASSERT(eos_fdt_get_prop(NULL, b.len, "/soc", "reg", out, &len) == -1);
+}
+
+/* The headline case: a path written without a unit address, against a tree
+ * that has one. Exact string equality never resolved this, so /soc/uart did
+ * not work on any real DTB -- only on trees built without addresses, which is
+ * what every other fixture in this file constructs. */
+static void test_a_path_without_a_unit_address_resolves_a_node_with_one(void)
+{
+    blob_t b; build_addressed(&b, "uart0", "uart1");
+    char out[24]; uint32_t len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart", "reg", out, &len) == 0);
+    /* The first match wins, as it does for any other duplicate name. */
+    ASSERT(strcmp(out, "uart0") == 0);
+}
+
+/* And an explicit address still selects exactly the node asked for, which is
+ * what makes the loose match safe on a tree with several of a peripheral. */
+static void test_an_explicit_unit_address_selects_that_node(void)
+{
+    blob_t b; build_addressed(&b, "uart0", "uart1");
+    char out[24]; uint32_t len = sizeof out;
+
+    ASSERT(get_prop_exact(&b, "/soc/uart@40004400", "reg", out, &len) == 0);
+    ASSERT(strcmp(out, "uart1") == 0);
+
+    len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart@40011000", "reg", out, &len) == 0);
+    ASSERT(strcmp(out, "uart0") == 0);
+
+    /* An address that is not in the tree must not fall back to a loose match. */
+    len = sizeof out;
+    ASSERT(get_prop_exact(&b, "/soc/uart@deadbeef", "reg", out, &len) != 0);
+}
+
 int main(void)
 {
     printf("=== eBootloader FDT Loader Tests ===\n");
@@ -419,6 +619,14 @@ int main(void)
     RUN(test_a_garbage_tag_is_refused_not_skipped);
     RUN(test_nop_padding_does_not_break_resolution);
     RUN(test_an_unaligned_blob_parses);
+    RUN(test_a_node_below_the_root_resolves);
+    RUN(test_each_uart_returns_its_own_value);
+    RUN(test_a_path_that_is_not_in_the_tree_is_not_found);
+    RUN(test_a_deeper_path_than_the_tree_is_not_found);
+    RUN(test_a_property_on_a_child_is_not_returned_as_the_parents);
+    RUN(test_an_overlong_path_is_distinguishable_from_a_null_argument);
+    RUN(test_a_path_without_a_unit_address_resolves_a_node_with_one);
+    RUN(test_an_explicit_unit_address_selects_that_node);
     printf("\n%d tests passed\n", tests_passed);
     return 0;
 }
