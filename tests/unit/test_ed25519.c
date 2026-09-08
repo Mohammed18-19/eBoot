@@ -377,8 +377,6 @@ TEST(test_ed25519_zero_signature_rejected)
     ASSERT(eos_ed25519_verify(sig, pk, msg, 1) != EOS_OK);
 }
 
-/* ---- SHA-512, the hash Ed25519 is defined over (FIPS 180-4) ---- */
-
 TEST(test_ed25519_low_order_R_with_a_valid_key_is_not_a_forgery)
 {
     /* The subgroup check guards the public key, not R, and that is
@@ -475,11 +473,9 @@ int main(void)
     run_test_ed25519_low_order_R_with_a_valid_key_is_not_a_forgery();
     run_test_ed25519_zero_pubkey_rejected();
     run_test_ed25519_zero_signature_rejected();
-    run_test_ed25519_low_order_R_with_a_valid_key_is_not_a_forgery();
     run_test_sha512_known_answers();
     run_test_sha512_streaming_matches_one_shot();
 
-    tests_run = 13;
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
 }
