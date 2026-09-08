@@ -20,6 +20,7 @@
 #define SIM_FLASH_SIZE  (64 * 1024)
 #define IMAGE_ADDR      0x4000u
 #define PAYLOAD_LEN     0x100u
+#define SLOT_A_SIZE    0x8000u
 
 static uint8_t sim_flash[SIM_FLASH_SIZE];
 
@@ -136,6 +137,7 @@ static eos_secure_boot_config_t base_cfg(void)
     eos_secure_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.image_addr        = IMAGE_ADDR;
+    cfg.slot_size         = SLOT_A_SIZE;
     cfg.require_signature = false;
     cfg.lock_debug        = false;
     return cfg;
@@ -196,6 +198,24 @@ TEST(test_decrypt_failure_is_attested)
     ASSERT(log->entries[log->count - 1].verify_result == EOS_SBOOT_ERR_DECRYPT);
 }
 
+
+static void test_tlv_beyond_slot_is_rejected(void)
+{
+    write_image(0);
+
+    eos_image_header_t hdr;
+    memcpy(&hdr, &sim_flash[IMAGE_ADDR], sizeof(hdr));
+
+    hdr.tlv_len = 1;
+    memcpy(&sim_flash[IMAGE_ADDR], &hdr, sizeof(hdr));
+
+    eos_secure_boot_config_t cfg = base_cfg();
+    cfg.slot_size = sizeof(eos_image_header_t) + PAYLOAD_LEN;
+
+    uint32_t entry = 0;
+    ASSERT(eos_secure_boot(&cfg, &entry) == EOS_SBOOT_ERR_BAD_HEADER);
+}
+
 int main(void)
 {
     printf("Secure boot policy tests\n");
@@ -203,6 +223,7 @@ int main(void)
     run_test_encrypted_image_rejected_while_decrypt_unimplemented();
     run_test_plaintext_image_boots_when_encryption_not_required();
     run_test_decrypt_failure_is_attested();
+    test_tlv_beyond_slot_is_rejected();
     printf("%d passed\n", tests_passed);
     return 0;
 }

@@ -23,6 +23,7 @@ extern "C" {
 
 typedef struct {
     uint32_t image_addr;            /* Flash address of image header */
+    uint32_t slot_size;             /* Flash capacity available to this image */
     uint32_t min_version;           /* Anti-rollback minimum version */
     bool     require_signature;     /* Enforce signature verification */
     bool     require_encryption;    /* Enforce AES-GCM decryption */

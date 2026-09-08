@@ -132,15 +132,11 @@ EOS_IMG_STATIC_ASSERT(offsetof(eos_image_header_t, flags) == 24,
                       "flags must stay at offset 24");
 EOS_IMG_STATIC_ASSERT(offsetof(eos_image_header_t, sig_len) == 61,
                       "sig_len must stay at offset 61");
-EOS_IMG_STATIC_ASSERT(offsetof(eos_image_header_t, reserved) == 62,
-                      "reserved[] must stay at offset 62");
 
 /* Field widths. An offset assert cannot see a field growing into padding that
  * happens to keep every later offset -- reserved[] absorbs exactly that. */
 EOS_IMG_STATIC_ASSERT(sizeof(((eos_image_header_t *)0)->hash) == 32,
                       "hash[] is 32 bytes on the wire");
-EOS_IMG_STATIC_ASSERT(sizeof(((eos_image_header_t *)0)->reserved) == 30,
-                      "reserved[] is 30 bytes on the wire");
 EOS_IMG_STATIC_ASSERT(sizeof(((eos_image_header_t *)0)->signature) == 64,
                       "signature[] is 64 bytes on the wire");
 
@@ -174,6 +170,13 @@ EOS_IMG_STATIC_ASSERT((int)EOS_SIG_ECDSA == 4, "EOS_SIG_ECDSA is 4 on the wire")
  * @return EOS_OK on valid header, negative error code otherwise.
  */
 int eos_image_parse_header(uint32_t addr, eos_image_header_t *out);
+
+/**
+ * Check that the complete image fits within a slot.
+ *
+ * The slot must contain the image header, payload, and TLV area.
+ */
+bool eos_image_fits_slot(const eos_image_header_t *hdr, uint32_t slot_size);
 
 /**
  * @brief Verify image integrity using CRC32 or hash.

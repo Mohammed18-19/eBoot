@@ -315,9 +315,7 @@ static int recovery_handle_verify(eos_slot_t slot)
         return recovery_send_nack();
 
     uint32_t slot_size = eos_hal_slot_size(slot);
-    if (slot_size == 0 ||
-        hdr.hdr_size > slot_size ||
-        hdr.image_size > slot_size - hdr.hdr_size)
+    if (!eos_image_fits_slot(&hdr, slot_size))
         return recovery_send_nack();
 
     /* eos_image_verify_integrity() adds hdr_size internally — pass base addr only */
@@ -358,11 +356,11 @@ static int recovery_handle_factory_reset(eos_bootctl_t *bctl)
     int rc2 = eos_slot_erase(EOS_SLOT_B);
     eos_bootctl_init_defaults(bctl);
     int rc3 = eos_bootctl_save(bctl);
-    
+
     if (rc1 != EOS_OK || rc2 != EOS_OK || rc3 != EOS_OK) {
         return recovery_send_nack();
     }
-    
+
     eos_boot_log_append(EOS_LOG_FACTORY_RESET, EOS_SLOT_NONE, 0);
     return recovery_send_ack();
 }
@@ -420,7 +418,7 @@ static int recovery_handle_boot_log(uint32_t start_index, uint16_t requested_cou
     rc = recovery_collect_boot_log_entries(boot_log_entries, &total_entries);
     if (rc != EOS_OK)
         return recovery_send_nack();
-    
+
     if (start_index >= total_entries) {
         uint8_t empty_response_header[3] = { RCVR_ACK, 0, 0 };
         return eos_hal_uart_send(empty_response_header, sizeof(empty_response_header));
@@ -429,7 +427,7 @@ static int recovery_handle_boot_log(uint32_t start_index, uint16_t requested_cou
     response_entry_count = (uint16_t)(total_entries - start_index);
     if (response_entry_count > requested_count)
         response_entry_count = requested_count;
-    
+
     uint8_t response_header[3] = {
         RCVR_ACK,
         (uint8_t)(response_entry_count & 0xFF),
@@ -439,7 +437,7 @@ static int recovery_handle_boot_log(uint32_t start_index, uint16_t requested_cou
     rc = eos_hal_uart_send(response_header, sizeof(response_header));
     if (rc != EOS_OK)
         return rc;
-    
+
     return eos_hal_uart_send(
         &boot_log_entries[start_index],
         response_entry_count * sizeof(boot_log_entries[0])

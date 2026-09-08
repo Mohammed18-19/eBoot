@@ -71,8 +71,15 @@ target_link_libraries(eboot_test_board_registry PRIVATE eboot_core)
 add_test(NAME test_board_registry COMMAND eboot_test_board_registry)
 
 # --- test_slot_manager: Firmware slot management ---
-add_executable(eboot_test_slot_manager unit/test_slot_manager.c)
-target_link_libraries(eboot_test_slot_manager PRIVATE eboot_core)
+add_executable(eboot_test_slot_manager
+    unit/test_slot_manager.c
+    ${CMAKE_SOURCE_DIR}/core/slot_manager.c
+    ${CMAKE_SOURCE_DIR}/core/image_slot_bounds.c
+)
+target_include_directories(eboot_test_slot_manager PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(eboot_test_slot_manager PRIVATE eboot_hal)
 add_test(NAME test_slot_manager COMMAND eboot_test_slot_manager)
 
 # --- test_boot_log: Boot log subsystem ---

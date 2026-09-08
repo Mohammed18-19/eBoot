@@ -82,6 +82,7 @@ add_library(eboot_core STATIC
     core/bootctl.c
     core/boot_log.c
     core/image_verify.c
+    core/image_slot_bounds.c
     core/slot_manager.c
     core/boot_policy.c
     core/recovery.c
