@@ -168,6 +168,14 @@ add_executable(eboot_test_fdt_loader unit/test_fdt_loader.c)
 target_link_libraries(eboot_test_fdt_loader PRIVATE eboot_core)
 add_test(NAME test_fdt_loader COMMAND eboot_test_fdt_loader)
 
+# --- test_fw_decrypt: Streaming AES-256-GCM firmware decryption ---
+# Anchored here rather than after test_keystore: #82 inserts its own
+# triple at that anchor, and whichever of the two landed second would have
+# conflicted for no reason other than where the block was placed.
+add_executable(eboot_test_fw_decrypt unit/test_fw_decrypt.c)
+target_link_libraries(eboot_test_fw_decrypt PRIVATE eboot_core)
+add_test(NAME test_fw_decrypt COMMAND eboot_test_fw_decrypt)
+
 # --- Valgrind test targets ---
 #
 # The list is derived from the suites registered above, not written out again.
