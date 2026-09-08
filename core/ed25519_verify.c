@@ -277,6 +277,16 @@ static void scalarmult(gf r[4], gf q[4], const uint8_t *s)
     }
 }
 
+static void scalarbase(gf r[4], const uint8_t *s)
+{
+    gf q[4];
+    fe_copy16(q[0], BX);
+    fe_copy16(q[1], BY);
+    fe_copy16(q[2], gf1);
+    fe_mul(q[3], BX, BY);
+    scalarmult(r, q, s);
+}
+
 /* The identity encodes as y = 1 with the sign bit clear. Takes a point rather
  * than an encoding so both callers below can pass one directly. */
 static int point_is_identity(gf p[4])
@@ -311,13 +321,9 @@ static void scalarbase(gf r[4], const uint8_t *s)
  * for every point whose order divides L -- including the identity itself,
  * whose order is 1 -- so the identity must also be excluded explicitly.
  *
- * The scalar is derived from ORDER_L rather than written out a second time,
- * so there is no separate constant to transcribe wrongly: a mistyped L would
- * reject valid keys, and only in the field.
- *
- * The key arrives negated from unpackneg(). [L](-A) = -[L]A and the identity
- * is its own negation, so neither condition is affected by the sign.
- */
+ * Public keys must be non-identity points in Ed25519's prime-order subgroup.
+ * Merely decoding a point is insufficient: an identity or torsion key can
+ * make the verification equation true without knowledge of a private key. */
 static int public_key_is_valid_subgroup(gf public_key[4])
 {
     uint8_t order_l[32];
