@@ -201,7 +201,6 @@ TEST(test_decrypt_failure_is_attested)
 
 TEST(test_tlv_beyond_slot_is_rejected)
 {
-    eos_hal_init(&sim_ops);
     write_image(0);
 
     eos_image_header_t hdr;

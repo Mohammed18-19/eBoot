@@ -37,7 +37,9 @@ static int sim_flash_read(uint32_t addr, void *buf, size_t len)
 
     memcpy(buf, &sim_flash[addr], len);
 
-    if (addr >= SLOT_A_ADDR + sizeof(eos_image_header_t) &&
+    uint32_t payload_start = SLOT_A_ADDR + sizeof(eos_image_header_t);
+
+    if (addr >= payload_start &&
         addr < SLOT_A_ADDR + SLOT_A_SIZE)
         payload_bytes_read += len;
 
@@ -196,8 +198,6 @@ TEST(test_tlv_beyond_slot_rejected_before_payload_read)
     hdr.tlv_len = 1;
     write_header(SLOT_A_ADDR, &hdr);
     memset(&bctl, 0, sizeof(bctl));
-
-    payload_bytes_read = 0;
 
     int rc = eboot_jump_to_app(&bctl, EOS_SLOT_A);
 
