@@ -23,11 +23,17 @@
 #define SLOT_A_SIZE    0x8000u
 
 static uint8_t sim_flash[SIM_FLASH_SIZE];
+static size_t payload_bytes_read = 0;
 
 static int sim_flash_read(uint32_t addr, void *buf, size_t len)
 {
     if (addr + len > SIM_FLASH_SIZE) return EOS_ERR_FLASH;
     memcpy(buf, &sim_flash[addr], len);
+
+    if (addr >= IMAGE_ADDR + sizeof(eos_image_header_t) &&
+        addr < IMAGE_ADDR + SLOT_A_SIZE)
+        payload_bytes_read += len;
+
     return EOS_OK;
 }
 
@@ -202,6 +208,7 @@ TEST(test_decrypt_failure_is_attested)
 static void test_tlv_beyond_slot_is_rejected(void)
 {
     write_image(0);
+    payload_bytes_read = 0;
 
     eos_image_header_t hdr;
     memcpy(&hdr, &sim_flash[IMAGE_ADDR], sizeof(hdr));
@@ -214,6 +221,7 @@ static void test_tlv_beyond_slot_is_rejected(void)
 
     uint32_t entry = 0;
     ASSERT(eos_secure_boot(&cfg, &entry) == EOS_SBOOT_ERR_BAD_HEADER);
+    ASSERT(payload_bytes_read == 0);
 }
 
 int main(void)

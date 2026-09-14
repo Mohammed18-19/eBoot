@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Security
+- **`eos_secure_boot_config_t`:** adds the required `slot_size` field. Existing callers that zero-initialize the configuration must now provide the image slot capacity; `slot_size == 0` fails closed during secure boot.
 - **Image header is now authenticated (header format v2).** `eos_image_verify_signature()` signed `hdr->hash` only — 32 of the header's 156 bytes. Everything else (`image_size`, `load_addr`, `entry_addr`, `flags`, `sig_type`, `image_version`) sat outside the signature, so an attacker holding a legitimately signed image could relocate it, move its entry point, or clear `EOS_IMG_FLAG_HASH_SHA256` to downgrade integrity checking from SHA-256 to forgeable CRC32 — all while keeping the signature valid. The signature now covers `EOS_IMG_SIGNED_LEN` (92) bytes: the whole header except `signature[]` itself. **Existing signed images must be re-signed.**
 - **`eos_image_parse_header`:** validates `hdr_version`, rejecting 0 and anything newer than this build understands.
 - **`tools/eos_sign.py`:** `SIG_TYPE_ED25519` was `1` — that is `EOS_SIG_CRC32` in `eos_types.h`, which `eos_image_verify_signature()` rejects outright — and `IMG_FLAG_SIGNED` was `1 << 2`, which is `EOS_IMG_FLAG_DEBUG`. It also never set `EOS_IMG_FLAG_HASH_SHA256`, so the bootloader read the stored SHA-256 as a CRC32. Constants now match `include/eos_types.h`.
