@@ -21,14 +21,61 @@ stm32f4 | stm32h7 | nrf52 | rpi4 | riscv64_virt | esp32 | x86_64_efi | \
 imx8m | am64x | samd51 | sifive_u | cortex_r5 | none")
 
 option(EBLDR_BUILD_TESTS "Build unit tests (native only)" OFF)
-option(EBLDR_REQUIRE_SIGNATURES "Require Ed25519 signatures for boot" ON)
-option(EBLDR_RECOVERY_AUTH "Require authentication for recovery commands" ON)
 option(EBLDR_VERIFY_STAGE1 "Verify Stage-1 hash before jump" ON)
 option(EBLDR_HARDENING "Enable compiler hardening flags" ON)
 option(EBLDR_SANITIZE "Enable ASAN/UBSAN for host builds" OFF)
 option(EBLDR_BUILD_FUZZ "Build libFuzzer fuzz targets" OFF)
+set(EBLDR_PRODUCTION_KEY "" CACHE STRING
+    "Ed25519 public key, 64 hex characters, compiled in as the trust anchor for \
+a board without OTP. A Release build of a real board refuses to configure without it.")
+option(EBLDR_ALLOW_DEV_KEY
+    "Let a Release build of a real board fall back to the RFC 8032 test key \
+(bring-up and CI cross-compiles only; never a device)" OFF)
 
 set(EBLDR_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# ====================================================================
+# Trust anchor for boards without OTP
+# ====================================================================
+# core/keystore.c falls back to a compiled-in public key when the board has
+# no OTP -- which today is every board under boards/, none of which
+# implements otp_read. Without a production key that fallback is the RFC 8032
+# test key, whose secret is published, and an artifact built that way accepts
+# anyone's firmware. So a Release build of a real board refuses to configure
+# until it is given a key, or told in so many words that it is not a release.
+include(cmake/ProductionKey.cmake)
+#
+# What counts as a release. The gate used to match the literal string
+# "Release" and nothing else, so MinSizeRel -- the ordinary build type for a
+# bootloader -- RelWithDebInfo, "release", "RELEASE" and an unset build type
+# all configured a real board around it. Only Debug is not release-shaped:
+# every other value is optimised, an unset value on a cross build still gets
+# -Os from this file, and a multi-config generator has no build type at all at
+# configure time. So the gate asks "is this Debug?" and refuses everything
+# else, rather than asking "is this spelled Release?".
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _ebldr_build_type)
+if(NOT EBLDR_PRODUCTION_KEY STREQUAL "")
+    ebldr_write_production_key_source("${EBLDR_PRODUCTION_KEY}"
+        "${CMAKE_BINARY_DIR}/generated/production_key.c")
+    set(EBLDR_PRODUCTION_KEY_SOURCE "${CMAKE_BINARY_DIR}/generated/production_key.c")
+    message(STATUS "  Trust anchor: production key from EBLDR_PRODUCTION_KEY")
+elseif(NOT EBLDR_BOARD STREQUAL "none" AND NOT EBLDR_ALLOW_DEV_KEY
+       AND NOT _ebldr_build_type STREQUAL "DEBUG")
+    if(CMAKE_BUILD_TYPE STREQUAL "")
+        set(_ebldr_build_desc "build with no CMAKE_BUILD_TYPE")
+    else()
+        set(_ebldr_build_desc "${CMAKE_BUILD_TYPE} build")
+    endif()
+    message(FATAL_ERROR
+        "EBLDR_PRODUCTION_KEY is not set: a ${_ebldr_build_desc} of board "
+        "'${EBLDR_BOARD}' would compile in the RFC 8032 test key as its trust "
+        "anchor, and anyone can sign for that key. Only a Debug build is exempt. "
+        "Pass -DEBLDR_PRODUCTION_KEY=<64 hex characters> (the raw Ed25519 public "
+        "key), or, for a bring-up or CI build that will never reach a device, "
+        "-DEBLDR_ALLOW_DEV_KEY=ON.")
+else()
+    message(STATUS "  Trust anchor: RFC 8032 test key (development only; see core/keystore.c)")
+endif()
 
 # ====================================================================
 # Compiler flags
@@ -54,15 +101,24 @@ if(EBLDR_SANITIZE AND NOT CMAKE_CROSSCOMPILING AND CMAKE_C_COMPILER_ID MATCHES "
 endif()
 
 # Security compile definitions
-if(EBLDR_REQUIRE_SIGNATURES)
-    add_compile_definitions(EBLDR_REQUIRE_SIGNATURES)
-endif()
-if(EBLDR_RECOVERY_AUTH)
-    add_compile_definitions(EBLDR_RECOVERY_AUTH)
-endif()
 if(EBLDR_VERIFY_STAGE1)
     add_compile_definitions(EBLDR_VERIFY_STAGE1)
 endif()
+
+# Signature verification and recovery authentication have no build-time
+# switch. EBLDR_REQUIRE_SIGNATURES and EBLDR_RECOVERY_AUTH used to be offered
+# as options, but no source file read the definitions they produced, so a
+# build with either OFF was byte-for-byte the build with it ON. A script that
+# still passes one as OFF is asking for something this bootloader does not
+# do; say so instead of configuring as if it had been granted.
+foreach(_dead_switch EBLDR_REQUIRE_SIGNATURES EBLDR_RECOVERY_AUTH)
+    if(DEFINED ${_dead_switch} AND NOT ${_dead_switch})
+        message(FATAL_ERROR
+            "${_dead_switch}=OFF: there is no build that skips signature "
+            "verification or recovery authentication. The option was never "
+            "read by any source file and has been removed; drop the flag.")
+    endif()
+endforeach()
 
 # ====================================================================
 # Core Libraries — platform-agnostic, always built
@@ -80,6 +136,7 @@ target_include_directories(eboot_hal PUBLIC ${EBLDR_INCLUDE_DIR})
 # ---- Core boot logic ----
 add_library(eboot_core STATIC
     core/bootctl.c
+    core/boot_log.c
     core/image_verify.c
     core/slot_manager.c
     core/boot_policy.c
@@ -106,8 +163,10 @@ add_library(eboot_core STATIC
     core/os_adapter.c
     core/ed25519_verify.c
     core/sha512.c
-    core/keystore.c
+    core/secure_boot.c
+    core/fdt_loader.c
     core/rollback.c
+    core/keystore.c
     core/debug_lock.c
     core/fw_decrypt.c
     core/image_tlv.c
@@ -115,6 +174,12 @@ add_library(eboot_core STATIC
 )
 target_include_directories(eboot_core PUBLIC ${EBLDR_INCLUDE_DIR})
 target_link_libraries(eboot_core PUBLIC eboot_hal)
+if(EBLDR_PRODUCTION_KEY_SOURCE)
+    # The generated ebldr_production_key[] and the switch that makes
+    # core/keystore.c use it instead of the development key.
+    target_sources(eboot_core PRIVATE ${EBLDR_PRODUCTION_KEY_SOURCE})
+    target_compile_definitions(eboot_core PRIVATE EBLDR_PRODUCTION_KEY=1)
+endif()
 
 # ---- Stage-1 boot manager ----
 add_library(eboot_stage1 STATIC
@@ -357,9 +422,21 @@ if(NOT EBLDR_BOARD STREQUAL "none")
                 "without the integrity check.")
         endif()
 
+        # The Cortex-R5 needs its own reset entry: the generic
+        # stage0/reset_entry.c is Cortex-M shaped (a .isr_vector address
+        # table) while the R5 script keeps .vectors and the core fetches
+        # instructions, not addresses. Without an R5 startup nothing emits
+        # .vectors and stage-0 links to 0 bytes (#137).
+        if(EBLDR_BOARD STREQUAL "cortex_r5")
+            enable_language(ASM)
+            set(_STAGE0_STARTUP "boards/cortex_r5/r5_stage0_startup.S")
+        else()
+            set(_STAGE0_STARTUP "stage0/reset_entry.c")
+        endif()
+
         if(EXISTS "${_LD_STAGE0}")
             add_executable(ebldr_stage0
-                stage0/reset_entry.c
+                ${_STAGE0_STARTUP}
                 stage0/hw_init_minimal.c
                 stage0/watchdog.c
                 stage0/recovery_entry.c
@@ -382,7 +459,10 @@ if(NOT EBLDR_BOARD STREQUAL "none")
         endif()
 
         if(EXISTS "${_LD_STAGE1}")
-            add_executable(eboot_firmware stage1/main.c)
+            # stage1/reset_entry.c owns the vector table the linker script keeps;
+            # without it (and the script's ENTRY) the link had nothing to anchor
+            # and the image was empty. See tools/embed_stage1_hash.py.
+            add_executable(eboot_firmware stage1/main.c stage1/reset_entry.c)
             target_include_directories(eboot_firmware PRIVATE
                 ${EBLDR_INCLUDE_DIR}
                 ${CMAKE_CURRENT_SOURCE_DIR}/boards/${EBLDR_BOARD}

@@ -31,6 +31,10 @@ void HardFault_Handler(void)  __attribute__((weak, alias("default_handler")));
 void MemManage_Handler(void)  __attribute__((weak, alias("default_handler")));
 void BusFault_Handler(void)   __attribute__((weak, alias("default_handler")));
 void UsageFault_Handler(void) __attribute__((weak, alias("default_handler")));
+void SVC_Handler(void)        __attribute__((weak, alias("default_handler")));
+void DebugMon_Handler(void)   __attribute__((weak, alias("default_handler")));
+void PendSV_Handler(void)     __attribute__((weak, alias("default_handler")));
+void SysTick_Handler(void)    __attribute__((weak, alias("default_handler")));
 
 /* Provided by linker script */
 extern uint32_t _estack;
@@ -81,10 +85,14 @@ void Reset_Handler(void)
 }
 
 /**
- * @brief Minimal vector table for stage-0.
+ * @brief Vector table for stage-0: reset, the core faults, and the system
+ * exceptions through SysTick.
  *
- * Only includes reset + core fault vectors. The application
- * firmware will provide its own full vector table.
+ * It used to stop at UsageFault. board_early_init() on stm32f4 enables the
+ * SysTick interrupt, whose vector is entry 15, so the first tick -- one
+ * millisecond in -- had the core fetch its handler address from whatever
+ * .text happened to follow the table. The application firmware provides
+ * its own full table once stage-1 hands over.
  */
 __attribute__((section(".isr_vector"), used))
 const uint32_t stage0_vector_table[] = {
@@ -95,4 +103,10 @@ const uint32_t stage0_vector_table[] = {
     (uint32_t)MemManage_Handler,   /* Memory management fault */
     (uint32_t)BusFault_Handler,    /* Bus fault */
     (uint32_t)UsageFault_Handler,  /* Usage fault */
+    0, 0, 0, 0,                    /* Reserved */
+    (uint32_t)SVC_Handler,         /* SVCall */
+    (uint32_t)DebugMon_Handler,    /* Debug monitor */
+    0,                             /* Reserved */
+    (uint32_t)PendSV_Handler,      /* PendSV */
+    (uint32_t)SysTick_Handler,     /* SysTick */
 };

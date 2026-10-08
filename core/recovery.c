@@ -25,6 +25,11 @@
 /* Recovery protocol commands */
 #define RCVR_CMD_PING       0x01
 #define RCVR_CMD_INFO       0x02
+/* Bits of the caps byte in the INFO response. */
+#define RCVR_CAP_RNG        0x01  /* board has an entropy source: AUTH can issue a challenge */
+#define RCVR_CAP_OTP        0x02  /* board has OTP: a shared secret can be provisioned */
+/* INFO response: ack(1) + five little-endian uint32 (20) + caps(1). */
+#define RCVR_INFO_LEN       22
 #define RCVR_CMD_ERASE      0x03
 #define RCVR_CMD_WRITE      0x04
 #define RCVR_CMD_VERIFY     0x05
@@ -137,15 +142,19 @@ static int recovery_handle_auth(void)
     }
 
     if (auth_state == RCVR_AUTH_NONE) {
-        /* Generate challenge using RNG */
+        /* The challenge is the only thing that stops a captured response
+         * from being replayed, so it has to come from an entropy source.
+         * A board without one gets no challenge at all: a fallback seeded
+         * from the millisecond tick lets a client reset the board and
+         * retry, at no cost, until a challenge it already holds an answer
+         * for comes back. Refusing here is fail-closed in the same way as
+         * an unreadable or unprovisioned secret below. */
         int rc = eos_hal_rng_get(challenge, RCVR_CHALLENGE_SIZE);
         if (rc != EOS_OK) {
-            /* Fallback: use tick-based pseudo-random */
-            uint32_t seed = eos_hal_get_tick_ms();
-            for (int i = 0; i < RCVR_CHALLENGE_SIZE; i++) {
-                seed = seed * 1103515245 + 12345;
-                challenge[i] = (uint8_t)(seed >> 16);
-            }
+            auth_fail_count++;
+            auth_state = RCVR_AUTH_NONE;
+            eos_boot_log_append(EOS_LOG_AUTH_NO_ENTROPY, EOS_SLOT_NONE, auth_fail_count);
+            return recovery_send_nack();
         }
 
         /* Send challenge to client */
@@ -182,7 +191,24 @@ static int recovery_handle_auth(void)
             /* Fail authentication if OTP secret is unreadable */
             auth_fail_count++;
             auth_state = RCVR_AUTH_NONE;
-            eos_boot_log_append(0x21, EOS_SLOT_NONE, auth_fail_count); /* AUTH_FAIL */
+            eos_boot_log_append(EOS_LOG_AUTH_FAIL, EOS_SLOT_NONE, auth_fail_count);
+            return recovery_send_nack();
+        }
+
+        /* Unprogrammed fuses read back as all zeros or all ones, and both
+         * are public. A board whose recovery secret was never provisioned
+         * must not authenticate anyone: the keystore already refuses an
+         * all-zero key for the same reason. Branch-free so the check does
+         * not leak which value the fuses hold. */
+        uint8_t all_zero = 0, all_ones = 0xFF;
+        for (size_t i = 0; i < sizeof(shared_secret); i++) {
+            all_zero |= shared_secret[i];
+            all_ones &= shared_secret[i];
+        }
+        if (all_zero == 0 || all_ones == 0xFF) {
+            auth_fail_count++;
+            auth_state = RCVR_AUTH_NONE;
+            eos_boot_log_append(EOS_LOG_AUTH_UNPROVISIONED, EOS_SLOT_NONE, auth_fail_count);
             return recovery_send_nack();
         }
 
@@ -199,12 +225,12 @@ static int recovery_handle_auth(void)
                                      EOS_SHA256_DIGEST_SIZE) == 0) {
             auth_state = RCVR_AUTH_AUTHENTICATED;
             auth_fail_count = 0;
-            eos_boot_log_append(0x20, EOS_SLOT_NONE, 0); /* AUTH_SUCCESS */
+            eos_boot_log_append(EOS_LOG_AUTH_SUCCESS, EOS_SLOT_NONE, 0);
             return recovery_send_ack();
         } else {
             auth_fail_count++;
             auth_state = RCVR_AUTH_NONE;
-            eos_boot_log_append(0x21, EOS_SLOT_NONE, auth_fail_count); /* AUTH_FAIL */
+            eos_boot_log_append(EOS_LOG_AUTH_FAIL, EOS_SLOT_NONE, auth_fail_count);
             return recovery_send_nack();
         }
     }
@@ -218,29 +244,58 @@ static int recovery_handle_ping(void)
     return eos_hal_uart_send(response, sizeof(response));
 }
 
+/* Little-endian store: the recovery protocol's byte order, independent of
+ * the target's. Returns the next offset. */
+static size_t rcvr_put_le32(uint8_t *buf, size_t at, uint32_t v)
+{
+    buf[at + 0] = (uint8_t)(v & 0xFF);
+    buf[at + 1] = (uint8_t)((v >> 8) & 0xFF);
+    buf[at + 2] = (uint8_t)((v >> 16) & 0xFF);
+    buf[at + 3] = (uint8_t)((v >> 24) & 0xFF);
+    return at + 4;
+}
+
 static int recovery_handle_info(void)
 {
     const eos_board_ops_t *ops = eos_hal_get_ops();
     if (!ops)
         return recovery_send_nack();
 
-    struct {
-        uint8_t  ack;
-        uint32_t flash_size;
-        uint32_t slot_a_addr;
-        uint32_t slot_a_size;
-        uint32_t slot_b_addr;
-        uint32_t slot_b_size;
-    } info;
+    /* The INFO response is a wire format, so it is built as bytes, not as a
+     * struct. Before this it was an unpacked struct -- 24 bytes, three of
+     * padding after ack that nothing wrote -- and sizeof(info) sent all 24:
+     * an unauthenticated caller (INFO needs no auth) received three bytes of
+     * whatever the previous call had left on the stack, and the repo's own
+     * client, which has always parsed the packed layout, printed them as the
+     * flash size. A byte buffer cannot have padding on any toolchain, needs
+     * no packing attribute or pragma to stay 22 bytes, and puts the five
+     * words on the wire little-endian regardless of the target's byte order
+     * -- which is what tools/uart_recovery.py has always assumed ('<IIIII').
+     * Layout: ack | flash_size | slot_a_addr | slot_a_size | slot_b_addr |
+     * slot_b_size | caps, uint32s little-endian. See docs/architecture.md.
+     *
+     * caps says what the board can do, so an integrator on a board with no
+     * entropy source learns that here, before authenticating -- which on
+     * such a board is impossible by construction, and cost 15 s of backoff
+     * to discover. It reveals nothing an attacker could not learn by trying
+     * (ADR-021).
+     */
+    uint8_t info[RCVR_INFO_LEN];
+    size_t  i = 0;
+    memset(info, 0, sizeof(info));
+    info[i++] = RCVR_ACK;
+    i = rcvr_put_le32(info, i, ops->flash_size);
+    i = rcvr_put_le32(info, i, ops->slot_a_addr);
+    i = rcvr_put_le32(info, i, ops->slot_a_size);
+    i = rcvr_put_le32(info, i, ops->slot_b_addr);
+    i = rcvr_put_le32(info, i, ops->slot_b_size);
+    info[i++] = (uint8_t)((ops->rng_get  ? RCVR_CAP_RNG : 0) |
+                          (ops->otp_read ? RCVR_CAP_OTP : 0));
+    /* Every byte accounted for: the length is the contract, not a sizeof. */
+    if (i != RCVR_INFO_LEN)
+        return recovery_send_nack();
 
-    info.ack         = RCVR_ACK;
-    info.flash_size  = ops->flash_size;
-    info.slot_a_addr = ops->slot_a_addr;
-    info.slot_a_size = ops->slot_a_size;
-    info.slot_b_addr = ops->slot_b_addr;
-    info.slot_b_size = ops->slot_b_size;
-
-    return eos_hal_uart_send(&info, sizeof(info));
+    return eos_hal_uart_send(info, sizeof(info));
 }
 
 static int recovery_handle_erase(eos_slot_t slot)
@@ -286,8 +341,11 @@ static int recovery_handle_write(eos_slot_t slot, uint32_t offset, uint16_t len)
 
     /* offset/len come straight from the wire; without this check a
      * recovery client can write past the slot boundary into the other
-     * slot, boot-control blocks, or the boot log. */
-    if (slot_size == 0 || (uint64_t)offset + len > (uint64_t)slot_size)
+     * slot, boot-control blocks, or the boot log. The rule lives in
+     * eos_recovery_write_in_range() -- the function the unit tests drive --
+     * and it also refuses a slot the board leaves unmapped (base 0), which
+     * would otherwise turn "write at offset" into "write at address". */
+    if (eos_recovery_write_in_range(base, slot_size, offset, len) != EOS_OK)
         return recovery_send_nack();
 
     recovery_send_ack();

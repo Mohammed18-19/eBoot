@@ -169,8 +169,13 @@ print("\n=== [7/8] Security Configuration Tests ===")
 with open(os.path.join(repo, "CMakeLists.txt")) as f:
     cmake = f.read()
 
-test("Ed25519 signature requirement enabled by default", "EBLDR_REQUIRE_SIGNATURES" in cmake)
-test("Recovery auth enabled by default", "EBLDR_RECOVERY_AUTH" in cmake)
+# These two used to assert that the option names appeared in CMakeLists.txt.
+# They did -- as options no source file read, so the assertion held while
+# the switch did nothing. The honest claim is the opposite one.
+test("No build option offers to skip signature verification",
+     not re.search(r"option\(\s*EBLDR_REQUIRE_SIGNATURES", cmake))
+test("No build option offers to skip recovery authentication",
+     not re.search(r"option\(\s*EBLDR_RECOVERY_AUTH", cmake))
 test("Stage1 hash verification enabled by default", "EBLDR_VERIFY_STAGE1" in cmake)
 test("Stack protector hardening flag present", "fstack-protector-strong" in cmake)
 test("FORTIFY_SOURCE=2 present", "_FORTIFY_SOURCE=2" in cmake)

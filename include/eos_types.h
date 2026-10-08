@@ -143,12 +143,25 @@ typedef struct {
 #define EOS_LOG_FACTORY_RESET   0x0A
 #define EOS_LOG_WATCHDOG_RESET  0x0B
 #define EOS_LOG_BOOT_FAIL       0x0C
+/* Recovery-session authentication. Emitted by core/recovery.c; decoded by
+ * tools/uart_recovery.py, whose table tests/unit/test_boot_log_event_names.py
+ * keeps in step with this list. */
+#define EOS_LOG_AUTH_SUCCESS       0x20
+#define EOS_LOG_AUTH_FAIL          0x21
+#define EOS_LOG_AUTH_UNPROVISIONED 0x22
+#define EOS_LOG_AUTH_NO_ENTROPY    0x23
 
 /* Maximum constants */
 #define EOS_MAX_BOOT_ATTEMPTS   3
 #define EOS_BOOT_LOG_MAX        32
 #define EOS_HASH_SIZE           32
 #define EOS_SIG_MAX_SIZE        64
+
+/* `detail` values stage-0 attaches to EOS_LOG_BOOT_FAIL when it refuses to
+ * jump to stage-1. Named here so a boot log can be read without the source. */
+#define EBLDR_FAIL_STAGE1_HASH  0xBAD1  /* stage-1 hash does not match the build-time value */
+#define EBLDR_FAIL_STAGE1_READ  0xBAD2  /* the flash read of stage-1 failed */
+#define EBLDR_FAIL_STAGE1_NO_IMAGE 0xBAD3 /* the build embedded no stage-1 image to verify against */
 
 /* ---------------- RTOS Boot Types (Phase 2) ---------------- */
 

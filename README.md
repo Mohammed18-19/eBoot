@@ -64,13 +64,20 @@ others (default `none` = native core-only build).
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `EBLDR_REQUIRE_SIGNATURES` | `ON` | Require Ed25519 signatures for boot |
 | `EBLDR_VERIFY_STAGE1` | `ON` | Verify the Stage-1 hash before jumping |
-| `EBLDR_RECOVERY_AUTH` | `ON` | Require authentication for recovery commands |
 | `EBLDR_HARDENING` | `ON` | Compiler hardening (`-fstack-protector-strong`, `_FORTIFY_SOURCE=2`) |
 | `EBLDR_SANITIZE` | `OFF` | ASan/UBSan for host builds |
 | `EBLDR_BUILD_FUZZ` | `OFF` | Build libFuzzer targets |
 | `EBLDR_BUILD_TESTS` | `OFF` | Build unit tests (native only); set to `ON` to enable |
+| `EBLDR_PRODUCTION_KEY` | `""` (empty) | Ed25519 public key (64 hex chars) compiled in as the trust anchor for a board without OTP; a Release build of a real board refuses to configure without it |
+| `EBLDR_ALLOW_DEV_KEY` | `OFF` | Let a Release build of a real board fall back to the RFC 8032 test key (bring-up and CI cross-compiles only; never a device) |
+
+Ed25519 signature verification and recovery-command authentication are not
+options: no build of this bootloader skips either. `EBLDR_REQUIRE_SIGNATURES`
+and `EBLDR_RECOVERY_AUTH` used to be listed here as `ON` by default, but no
+source file read the definitions they produced, so `OFF` built the same
+firmware as `ON`. Both have been removed; passing either as `OFF` now fails
+the configure.
 
 ## Test
 
@@ -92,3 +99,4 @@ See [`docs/`](docs/): `quickstart.md`, `architecture.md`, `secure_boot_chain.md`
 ## License
 
 Licensed under the [MIT License](LICENSE).
+

@@ -9,6 +9,7 @@
 
 #include "eos_multicore.h"
 #include "eos_hal.h"
+#include "eos_image.h"
 #include "eos_types.h"
 #include <stdio.h>
 #include <string.h>
@@ -73,12 +74,78 @@ static const eos_multicore_ops_t mock_mc_ops = {
     .get_current_core = mock_get_current,
 };
 
+/* ---- Simulated board and image verification, for the AMP slot path ----
+ *
+ * eos_multicore_start() in AMP mode reads the slot through the HAL and then
+ * verifies what it finds, so these tests need slot geometry and scriptable
+ * verification results. Only slot_a_addr matters here; every other
+ * eos_board_ops_t accessor NULL-guards, so the rest stays zeroed.
+ *
+ * The three eos_image_* definitions below override eboot_core's real ones at
+ * link time -- the same technique test_slot_manager.c uses -- so each stage
+ * can be failed independently without building and signing a real image. */
+
+#define AMP_SLOT_A_ADDR   0x10000u
+#define AMP_IMAGE_ENTRY   0x20000u
+
+static const eos_board_ops_t sim_board_ops = {
+    .slot_a_addr = AMP_SLOT_A_ADDR,
+    .slot_a_size = 0x10000u,
+};
+
+static int      parse_result;
+static int      integrity_result;
+static int      signature_result;
+static uint32_t image_entry_addr;
+
+int eos_image_parse_header(uint32_t addr, eos_image_header_t *out)
+{
+    if (!out || addr != AMP_SLOT_A_ADDR) return EOS_ERR_INVALID;
+    if (parse_result != EOS_OK) return parse_result;
+
+    memset(out, 0, sizeof(*out));
+    out->magic      = EOS_IMG_MAGIC;
+    out->entry_addr = image_entry_addr;
+    return EOS_OK;
+}
+
+int eos_image_verify_integrity(const eos_image_header_t *hdr, uint32_t addr)
+{
+    if (!hdr || addr != AMP_SLOT_A_ADDR) return EOS_ERR_INVALID;
+    return integrity_result;
+}
+
+int eos_image_verify_signature(const eos_image_header_t *hdr)
+{
+    if (!hdr) return EOS_ERR_INVALID;
+    return signature_result;
+}
+
 static void mc_setup(void)
 {
     memset(mock_states, 0, sizeof(mock_states));
     mock_states[0] = EOS_CORE_STATE_RUNNING;  /* primary core is running */
     mock_start_count = 0;
+    parse_result     = EOS_OK;
+    integrity_result = EOS_OK;
+    signature_result = EOS_OK;
+    image_entry_addr = AMP_IMAGE_ENTRY;
+    eos_hal_init(&sim_board_ops);
     eos_multicore_init(&mock_mc_ops);
+}
+
+/** Config for the AMP slot path, shaped as eos_multicore_start_amp() builds it. */
+static eos_core_config_t amp_cfg(void)
+{
+    eos_core_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.core_id    = 1;
+    cfg.arch       = EOS_ARCH_ARM_R5;
+    cfg.mode       = EOS_CORE_AMP;
+    cfg.method     = EOS_START_AUTO;
+    cfg.entry_addr = AMP_IMAGE_ENTRY;
+    cfg.image_slot = EOS_SLOT_A;
+    return cfg;
 }
 
 TEST(test_init)
@@ -197,6 +264,64 @@ TEST(test_ipi_mailbox_fallback)
     ASSERT(dummy_mailbox == 0xDEADBEEF);
 }
 
+/* ---- AMP slot verification ----
+ *
+ * The AMP path parsed the slot header and started the core on it. A header
+ * parses whenever the magic and sizes are well formed, which an attacker who
+ * can write the slot controls completely, so the core ran unauthenticated
+ * code. These pin each stage. */
+
+TEST(test_amp_starts_a_verified_image)
+{
+    mc_setup();
+    eos_core_config_t cfg = amp_cfg();
+    ASSERT(eos_multicore_start(&cfg) == EOS_OK);
+    ASSERT(mock_start_count == 1);
+    ASSERT(mock_states[1] == EOS_CORE_STATE_RUNNING);
+}
+
+TEST(test_amp_refuses_a_failed_signature)
+{
+    mc_setup();
+    signature_result = EOS_ERR_SIGNATURE;
+    eos_core_config_t cfg = amp_cfg();
+    ASSERT(eos_multicore_start(&cfg) == EOS_ERR_SIGNATURE);
+    ASSERT(mock_start_count == 0);
+    ASSERT(mock_states[1] != EOS_CORE_STATE_RUNNING);
+}
+
+TEST(test_amp_refuses_a_failed_integrity_check)
+{
+    mc_setup();
+    integrity_result = EOS_ERR_CRC;
+    eos_core_config_t cfg = amp_cfg();
+    ASSERT(eos_multicore_start(&cfg) == EOS_ERR_CRC);
+    ASSERT(mock_start_count == 0);
+}
+
+/* A verified image the core then does not branch into is verification
+ * theatre, so a config whose entry_addr is not the signed header's is
+ * refused. eos_multicore_start_amp() always agrees with the header. */
+TEST(test_amp_refuses_an_entry_addr_the_image_does_not_name)
+{
+    mc_setup();
+    eos_core_config_t cfg = amp_cfg();
+    cfg.entry_addr = AMP_IMAGE_ENTRY + 4;
+    ASSERT(eos_multicore_start(&cfg) == EOS_ERR_INVALID);
+    ASSERT(mock_start_count == 0);
+}
+
+/* The wrapper derives entry_addr from the same header, so it inherits every
+ * check above rather than carrying its own copy of them. */
+TEST(test_amp_wrapper_refuses_a_failed_signature)
+{
+    mc_setup();
+    signature_result = EOS_ERR_SIGNATURE;
+    ASSERT(eos_multicore_start_amp(1, EOS_SLOT_A, EOS_ARCH_ARM_R5)
+           == EOS_ERR_SIGNATURE);
+    ASSERT(mock_start_count == 0);
+}
+
 int main(void)
 {
     printf("=== eBootloader: Multicore Unit Tests ===\n\n");
@@ -211,6 +336,11 @@ int main(void)
     run_test_boot_all();
     run_test_invalid_core_id();
     run_test_ipi_mailbox_fallback();
+    run_test_amp_starts_a_verified_image();
+    run_test_amp_refuses_a_failed_signature();
+    run_test_amp_refuses_a_failed_integrity_check();
+    run_test_amp_refuses_an_entry_addr_the_image_does_not_name();
+    run_test_amp_wrapper_refuses_a_failed_signature();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

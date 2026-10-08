@@ -117,6 +117,7 @@ static int tests_passed = 0;
         payload_bytes_read = 0; \
         eos_hal_init(&sim_ops); \
         printf("  %-55s ", #name); \
+        tests_run++; \
         name(); \
         tests_passed++; \
         printf("[PASS]\n"); \
@@ -213,7 +214,6 @@ int main(void)
     run_test_in_bounds_image_reaches_integrity_check();
     run_test_tlv_beyond_slot_rejected_before_payload_read();
 
-    tests_run = 3;
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
 

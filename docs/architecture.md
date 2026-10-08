@@ -96,7 +96,7 @@ Reset_Handler()
 | Command   | Code | Description                     |
 |-----------|------|---------------------------------|
 | PING      | 0x01 | Identity check — returns "EOS"  |
-| INFO      | 0x02 | Flash layout and slot addresses |
+| INFO      | 0x02 | Flash layout, slot addresses and capabilities. Unauthenticated (ADR-021). Response: 22 bytes packed -- `ack`, `flash_size`, `slot_a_addr`, `slot_a_size`, `slot_b_addr`, `slot_b_size` (LE `uint32`), `caps` (bit 0 RNG, bit 1 OTP) |
 | ERASE     | 0x03 | Erase target slot               |
 | WRITE     | 0x04 | Write chunk to slot             |
 | VERIFY    | 0x05 | Verify slot image integrity     |

@@ -61,7 +61,23 @@ int eos_multicore_start(const eos_core_config_t *cfg)
     if (cfg->core_id >= EOS_MAX_CORES) return EOS_ERR_INVALID;
     if (cfg->entry_addr == 0) return EOS_ERR_INVALID;
 
-    /* For AMP mode, verify the firmware image exists in the slot */
+    /* For AMP mode, verify the firmware image in the slot before a core is
+     * allowed to execute it. Parsing the header only proves the slot is
+     * shaped like an image; it authenticates nothing. Every other consumer
+     * of a slot in this tree also checks integrity and signature --
+     * slot_manager.c verify_slot(), stage1/jump_app.c, recovery.c and
+     * fw_update.c -- and this path did not.
+     *
+     * The checks live here rather than in eos_multicore_start_amp() because
+     * this function is public and a caller can reach it with a hand-built
+     * config; putting them in the wrapper alone would leave that entry
+     * point unverified.
+     *
+     * entry_addr must be the one the signed header names. Verifying the
+     * image and then branching somewhere else would authenticate an image
+     * nobody runs: eos_multicore_start_amp() already derives entry_addr
+     * from the header, so this rejects only a config that disagrees with
+     * the image it points at. */
     if (cfg->mode == EOS_CORE_AMP && cfg->image_slot != EOS_SLOT_NONE) {
         uint32_t slot_addr = eos_hal_slot_addr(cfg->image_slot);
         if (slot_addr == 0) return EOS_ERR_NO_IMAGE;
@@ -69,6 +85,14 @@ int eos_multicore_start(const eos_core_config_t *cfg)
         eos_image_header_t hdr;
         int rc = eos_image_parse_header(slot_addr, &hdr);
         if (rc != EOS_OK) return rc;
+
+        rc = eos_image_verify_integrity(&hdr, slot_addr);
+        if (rc != EOS_OK) return rc;
+
+        rc = eos_image_verify_signature(&hdr);
+        if (rc != EOS_OK) return rc;
+
+        if (cfg->entry_addr != hdr.entry_addr) return EOS_ERR_INVALID;
     }
 
     /* Store config */

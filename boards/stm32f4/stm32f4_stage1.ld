@@ -13,8 +13,21 @@ MEMORY
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 
+/* Stage-0 loads SP from the first word of this image and branches to the
+ * second, so the vector table has to be the first thing in FLASH and the
+ * link has to be anchored on it: with -nostartfiles and --gc-sections and
+ * neither of these lines, nothing was reachable and the image was empty. */
+ENTRY(Reset_Handler)
+
 SECTIONS
 {
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))
+        . = ALIGN(4);
+    } > FLASH
+
     .text :
     {
         . = ALIGN(4);

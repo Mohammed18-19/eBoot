@@ -30,7 +30,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   build-arm:
     name: Cross-compile STM32F4
@@ -43,14 +43,45 @@ jobs:
 
       - name: Configure
         run: |
+          # A production key, not the dev-key opt-out. With the trust-anchor gate
+          # in place, every other pre-merge job that configures a real board
+          # passes -DEBLDR_ALLOW_DEV_KEY=ON, so the branch a real device takes --
+          # build/generated/production_key.c and the #ifdef EBLDR_PRODUCTION_KEY
+          # half of core/keystore.c -- was first cross-compiled inside release.yml,
+          # when a tag was pushed. A link or section-placement fault in the
+          # generated TU would have surfaced during a release, not a review.
+          # The key is RFC 8032 section 7.1 TEST 2's public key: a genuine curve
+          # point (the configure-time check runs on it), the same fixture the host
+          # tests use, and one whose secret is published -- this job's output
+          # reaches no device. ci.yml's ARM leg still compiles the dev-key branch.
           cmake -B build-arm \
             -DCMAKE_SYSTEM_NAME=Generic \
             -DCMAKE_C_COMPILER=arm-none-eabi-gcc \
+            -DCMAKE_BUILD_TYPE=Release \
             -DEBLDR_BOARD=stm32f4 \
+            -DEBLDR_PRODUCTION_KEY=3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c \
             -DCMAKE_C_FLAGS="-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -specs=nosys.specs"
 
       - name: Build
         run: cmake --build build-arm --parallel
+      - name: The production-key branch was compiled, not the dev key
+        run: |
+          test -f build-arm/generated/production_key.c
+          # CMake names objects .obj, not .o, when CMAKE_SYSTEM_NAME=Generic;
+          # the first run of this step looked for .o and reported the TU
+          # uncompiled when the build log showed it compiling. Match both.
+          obj=$(find build-arm \( -name 'production_key.c.o' -o -name 'production_key.c.obj' \) | head -1)
+          test -n "$obj" || { echo '::error::generated/production_key.c was not compiled'; exit 1; }
+          # the object must carry the fixture key and must not carry the dev key
+          python3 - "$obj" <<'PY'
+          import sys
+          o = open(sys.argv[1], 'rb').read()
+          fixture = bytes.fromhex('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c')
+          dev = bytes.fromhex('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a')
+          assert fixture in o, 'the configured production key is not in the object'
+          assert dev not in o, 'the development key is in the production-key object'
+          print('production_key.c.o carries the fixture key and not the dev key')
+          PY
 
       - name: Report size
         run: arm-none-eabi-size build-arm/*.elf 2>/dev/null || true

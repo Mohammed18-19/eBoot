@@ -198,3 +198,27 @@ eBootloader's `eos_platform_t` enum in `eos_hal.h` defines 24 platform targets. 
 - [Architecture](architecture.md)
 - [Security Model](security.md)
 - [Key Lifecycle](key_lifecycle.md)
+
+---
+
+## Upstream CVE watch (2026-10-07)
+
+eBoot audits itself against upstream bootloader components (Mbed TLS,
+U-Boot, TF-A, GRUB2), but "we checked the latest" goes stale the day after
+release. Standing subscription for the audit-comparison loop:
+
+- **Subscribe**: the monthly dev.to "Open-Source Device CVEs: What to Patch
+  by Vertical" series as the bootloader-class upstream baseline. Monthly
+  cadence, per-vertical tables; it is the human-readable layer over the
+  raw CVE feeds for exactly the component set eBoot tracks.
+
+- **September-2026 datapoint**: U-Boot 2026.07 did not clear the month —
+  network-boot fixes landed in **2026.10-rc3..rc5**. Any eBoot audit
+  comparison that baselines against 2026.07 is stale on the network-boot
+  surface; the comparison must re-baseline against **2026.10 on release**.
+
+- **Tie to ZDS day-1 work**: mine the MCUboot measured-boot patterns from
+  the Zephyr Developer Summit day-1 CRA-readiness and secure-boot sessions
+  against the UART-recovery-auth findings in the current audit cycle —
+  measured boot is the mechanism that turns "we verified the image" into
+  "we can prove what booted."

@@ -21,13 +21,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake -B build -DEBLDR_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release
       - name: Test
-        run: ctest --test-dir build --output-on-failure -C Release
+        run: ctest --test-dir build --output-on-failure --no-tests=error -C Release
 
   cross-compile:
     name: Cross (${{ matrix.arch }})
@@ -46,7 +46,7 @@ jobs:
             toolchain: toolchains/riscv64-linux-gnu.cmake
             packages: gcc-riscv64-linux-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install cross-compiler
         run: |
           sudo apt-get update
@@ -60,7 +60,7 @@ jobs:
     name: Valgrind Memcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install dependencies
         run: |

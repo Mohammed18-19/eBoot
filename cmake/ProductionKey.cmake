@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 EoS Project
+#
+# The compiled-in trust anchor.
+#
+# core/keystore.c falls back to a compiled-in public key when the board has no
+# OTP to read one from. With EBLDR_PRODUCTION_KEY unset that key is the RFC 8032
+# section 7.1 TEST 1 public key, whose secret is printed in the RFC, so a device
+# built that way accepts firmware from anyone. These two functions are how a
+# real key gets in: the top-level CMakeLists.txt calls them for the value of
+# EBLDR_PRODUCTION_KEY, and tests/CMakeLists.txt calls them for a fixture key
+# so the production branch of keystore.c is compiled and exercised on every
+# host build.
+
+# The development key, lower-case hex. A production key that equals it is
+# refused: it is not a secret, and the whole point of the option is to keep it
+# out of an artifact.
+set(EBLDR_DEV_KEY_HEX
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+
+# Where this module lives, captured at include time: inside a function,
+# CMAKE_CURRENT_LIST_DIR is the caller's directory, not this file's.
+set(_EBLDR_PRODUCTION_KEY_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+
+# Fail the configure unless `hex` is a raw Ed25519 public key that is not the
+# development key -- and, when python3 is available, one the verifier would
+# accept: a point on edwards25519, in the prime-order subgroup.
+#
+# The length and hex checks say nothing about whether the bytes are a key at
+# all. The development key shipped for months decoding to no point on the
+# curve, and one mistyped hex digit in a release secret reproduces that: the
+# build is green, the artifact scan is green, the status line says
+# "production key", and the device refuses every image it is ever offered.
+# tools/check_production_key.py applies core/ed25519_verify.c's own rule,
+# [L]P == identity and P != identity, in pure Python. CMake cannot do the
+# field arithmetic itself, so the check needs python3; without it the
+# configure warns, in so many words, about what was not checked.
+function(ebldr_check_production_key_hex hex)
+    string(LENGTH "${hex}" _len)
+    if(NOT _len EQUAL 64 OR NOT hex MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR
+            "EBLDR_PRODUCTION_KEY must be a raw Ed25519 public key as exactly 64 "
+            "hexadecimal characters; got ${_len} character(s).")
+    endif()
+    string(TOLOWER "${hex}" _lower)
+    if(_lower STREQUAL EBLDR_DEV_KEY_HEX)
+        message(FATAL_ERROR
+            "EBLDR_PRODUCTION_KEY is the RFC 8032 section 7.1 TEST 1 public key -- "
+            "the development key, whose secret is published. It cannot be a "
+            "production trust anchor.")
+    endif()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${_EBLDR_PRODUCTION_KEY_MODULE_DIR}/../tools/check_production_key.py"
+                    "${hex}"
+            RESULT_VARIABLE _rc
+            OUTPUT_VARIABLE _out
+            ERROR_VARIABLE _err)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR
+                "EBLDR_PRODUCTION_KEY is not a usable Ed25519 public key: ${_err}"
+                "A device built with it would refuse every firmware image.")
+        endif()
+    else()
+        # Not a warning. This gate is the only control for anyone building a
+        # device image outside release.yml, and a warning scrolls past. A
+        # production-key configure that cannot validate its key does not
+        # compile an unchecked key in; it stops, and says what to install.
+        # Development builds (no EBLDR_PRODUCTION_KEY) never reach this.
+        message(FATAL_ERROR
+            "EBLDR_PRODUCTION_KEY was given but python3 was not found, so it cannot "
+            "be checked for being a point in the prime-order subgroup of "
+            "edwards25519. A key that is not one ships a device that refuses every "
+            "image, so the key is not compiled in unchecked. Install python3, or "
+            "configure on a machine that has it.")
+    endif()
+endfunction()
+
+# Write a C translation unit defining ebldr_production_key[] from `hex` to
+# `out`. The file is only rewritten when its content changes, so an unchanged
+# key does not rebuild the keystore on every configure.
+function(ebldr_write_production_key_source hex out)
+    ebldr_check_production_key_hex("${hex}")
+    string(TOLOWER "${hex}" _lower)
+    string(REGEX MATCHALL "[0-9a-f][0-9a-f]" _bytes "${_lower}")
+    set(_body "")
+    set(_i 0)
+    foreach(_b IN LISTS _bytes)
+        math(EXPR _col "${_i} % 8")
+        if(_col EQUAL 0)
+            string(APPEND _body "    ")
+        endif()
+        string(APPEND _body "0x${_b},")
+        if(_col EQUAL 7)
+            string(APPEND _body "\n")
+        else()
+            string(APPEND _body " ")
+        endif()
+        math(EXPR _i "${_i} + 1")
+    endforeach()
+    set(_content
+"/* SPDX-License-Identifier: MIT */
+/* Generated by cmake/ProductionKey.cmake from a 64-hex-character Ed25519
+ * public key. Do not edit; change the key the build was configured with. */
+#include \"eos_production_key.h\"
+
+const uint8_t ebldr_production_key[EOS_ED25519_PUB_KEY_SIZE] = {
+${_body}};
+")
+    get_filename_component(_dir "${out}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_dir}")
+    file(WRITE "${out}.in" "${_content}")
+    configure_file("${out}.in" "${out}" COPYONLY)
+endfunction()

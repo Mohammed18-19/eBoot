@@ -16,6 +16,8 @@ MEMORY
 
 _estack = ORIGIN(BTCM) + LENGTH(BTCM);
 
+ENTRY(r5_reset_entry)
+
 SECTIONS
 {
     .vectors :

@@ -20,11 +20,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Refuse a production key the bootloader could not use
+        # Every firmware job below needs this job, so a bad secret fails the
+        # release here -- before a single board is configured -- rather than
+        # shipping a fleet whose bootloader refuses every image it is offered.
+        # cmake/ProductionKey.cmake repeats the check per board when python3
+        # is present; this is the one place it is guaranteed to run, on the
+        # exact bytes the secret holds. A missing or empty secret fails too.
+        env:
+          KEY: ${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}
+        run: python3 tools/check_production_key.py "$KEY"
       - name: Build & Test
         run: |
           cmake -B build -DEBLDR_BUILD_TESTS=ON -DEBLDR_HARDENING=ON
           cmake --build build --parallel
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure --no-tests=error
 
   firmware-arm-cortex-m:
     name: Firmware (${{ matrix.board }})
@@ -47,9 +57,18 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       - name: Build firmware
+        # EBLDR_PRODUCTION_KEY_HEX is the raw Ed25519 public key, 64 hex
+        # characters, that boards without OTP compile in as their trust
+        # anchor. With the secret unset the value is empty and CMake refuses
+        # to configure a Release build of a real board -- so a release cannot
+        # be cut with the RFC 8032 test key until a maintainer provides the
+        # anchor. That is the intended shape; do not work around it with
+        # EBLDR_ALLOW_DEV_KEY here.
         run: |
-          cmake -B build -DEBLDR_BOARD=${{ matrix.board }} -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DEBLDR_BOARD=${{ matrix.board }} -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw
@@ -77,10 +96,12 @@ jobs:
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       - name: Build
         run: |
-          cmake -B build -DEBLDR_BOARD=rpi4 \
+          cmake -B build -DEBLDR_BOARD=rpi4 -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" \
             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw
@@ -107,10 +128,12 @@ jobs:
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       - name: Build
         run: |
-          cmake -B build -DEBLDR_BOARD=riscv64_virt \
+          cmake -B build -DEBLDR_BOARD=riscv64_virt -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" \
             -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw
@@ -152,10 +175,12 @@ jobs:
         run: |
           source ~/esp-idf/export.sh
           # Use ESP-IDF's idf.py if a top-level CMakeLists has IDF setup, else direct cmake
-          cmake -B build -DEBLDR_BOARD=esp32 -DCMAKE_BUILD_TYPE=Release \
+          cmake -B build -DEBLDR_BOARD=esp32 -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE=$IDF_PATH/tools/cmake/toolchain-esp32.cmake || \
-          cmake -B build -DEBLDR_BOARD=esp32 -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DEBLDR_BOARD=esp32 -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw
@@ -195,10 +220,12 @@ jobs:
       - name: Build firmware (RISC-V)
         run: |
           source ~/esp-idf/export.sh
-          cmake -B build -DEBLDR_BOARD=esp32c3 -DCMAKE_BUILD_TYPE=Release \
+          cmake -B build -DEBLDR_BOARD=esp32c3 -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE=$IDF_PATH/tools/cmake/toolchain-esp32c3.cmake || \
-          cmake -B build -DEBLDR_BOARD=esp32c3 -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DEBLDR_BOARD=esp32c3 -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw
@@ -224,8 +251,10 @@ jobs:
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       - name: Build EFI firmware
         run: |
-          cmake -B build -DEBLDR_BOARD=x86_64_efi -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DEBLDR_BOARD=x86_64_efi -DEBLDR_PRODUCTION_KEY="${{ secrets.EBLDR_PRODUCTION_KEY_HEX }}" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
+      - name: Refuse an artifact that embeds the development anchor
+        run: python3 tools/check_no_dev_anchor.py build
       - name: Collect artifacts
         run: |
           mkdir -p fw

@@ -52,7 +52,9 @@ void ebldr_stage0_main(void)
     /* Check for recovery triggers */
     if (ebldr_recovery_triggered(&bctl)) {
         eos_recovery_enter(&bctl);
-        /* Does not return unless recovery instructs a reboot */
+        /* Recovery does not return today; if it ever does, a requested
+         * recovery session must not fall through into a normal boot. */
+        return;
     }
 
     ebldr_watchdog_feed();
@@ -67,6 +69,18 @@ void ebldr_stage0_main(void)
         extern const uint8_t stage1_expected_hash[32];
         extern const uint32_t stage1_expected_size;
 
+        /* The build embeds these from the stage-1 binary it linked. A size
+         * of zero means it linked nothing (tools/embed_stage1_hash.py now
+         * refuses that, but a bootloader does not trust its own build to
+         * have been correct): the loop below would run zero iterations,
+         * the digest of nothing would match the digest of nothing, and
+         * IMAGE_VALID would be recorded for an image that does not exist. */
+        if (stage1_expected_size == 0) {
+            eos_boot_log_append(EOS_LOG_BOOT_FAIL, EOS_SLOT_NONE, EBLDR_FAIL_STAGE1_NO_IMAGE);
+            eos_recovery_enter(&bctl);
+            return;
+        }
+
         uint8_t computed[32];
         eos_sha256_ctx_t sha_ctx;
         eos_sha256_init(&sha_ctx);
@@ -76,7 +90,17 @@ void ebldr_stage0_main(void)
         while (off < stage1_expected_size) {
             uint32_t chunk = stage1_expected_size - off;
             if (chunk > sizeof(buf)) chunk = sizeof(buf);
-            eos_hal_flash_read(stage1_addr + off, buf, chunk);
+            /* A read that fails leaves buf holding the previous chunk, or
+             * whatever the stack held, and the result was hashed as if it
+             * were stage-1. That happened to mismatch, so the failure mode
+             * was recovery with the wrong reason; a read failure is its
+             * own reason and is refused as such, like eos_crypto_verify_image()
+             * refuses it in core. */
+            if (eos_hal_flash_read(stage1_addr + off, buf, chunk) != EOS_OK) {
+                eos_boot_log_append(EOS_LOG_BOOT_FAIL, EOS_SLOT_NONE, EBLDR_FAIL_STAGE1_READ);
+                eos_recovery_enter(&bctl);
+                return;
+            }
             eos_sha256_update(&sha_ctx, buf, chunk);
             off += chunk;
         }
@@ -91,9 +115,14 @@ void ebldr_stage0_main(void)
             if (computed[i] != stage1_expected_hash[i]) match2 = 1;
         }
 
+        /* A mismatch enters recovery and stops here. The only thing that
+         * used to keep it from the jump below was eos_recovery_enter()
+         * never returning -- an invariant its own `int` return type does
+         * not promise -- and IMAGE_VALID was appended on the way past. */
         if (match1 || match2) {
-            eos_boot_log_append(EOS_LOG_BOOT_FAIL, EOS_SLOT_NONE, 0xBAD1);
+            eos_boot_log_append(EOS_LOG_BOOT_FAIL, EOS_SLOT_NONE, EBLDR_FAIL_STAGE1_HASH);
             eos_recovery_enter(&bctl);
+            return;
         }
         eos_boot_log_append(EOS_LOG_IMAGE_VALID, EOS_SLOT_NONE, 0);
 #endif

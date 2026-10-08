@@ -83,8 +83,16 @@ This produces:
 cd EoS/eboot/tools
 
 # Generate an Ed25519 keypair (first time only).
-# Writes keys/private.pem, keys/public.pem and keys/public_key.h.
+# Writes keys/private.pem, keys/public.pem and keys/public_key.hex -- the
+# 64-hex-character value the bootloader build takes as its trust anchor.
 python3 sign_image.py --genkey --output keys/
+
+# Build the bootloader with THAT key as its trust anchor. Without
+# EBLDR_PRODUCTION_KEY a board build keeps the RFC 8032 test key, whose
+# private half is public -- and a release-shaped build refuses to configure
+# rather than let that happen silently. Full lifecycle: docs/key_lifecycle.md.
+cmake -B build -DEBLDR_BOARD=<board> -DCMAKE_BUILD_TYPE=Release \
+      -DEBLDR_PRODUCTION_KEY=$(cat keys/public_key.hex)
 
 # Pack a raw firmware binary into an .eimg container.
 python3 imgpack.py --input firmware.bin --output firmware.eimg \

@@ -103,11 +103,15 @@ jobs:
 
       - name: Configure (ARM)
         run: |
+          # A Release build of a real board refuses to configure without a
+          # production trust anchor. This build checks that the tree
+          # cross-compiles; nothing it produces reaches a device, so it says so.
           cmake -B build/arm -G Ninja \
             -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
             -DCMAKE_TOOLCHAIN_FILE=toolchains/arm-none-eabi.cmake \
             -DEBLDR_BOARD=stm32f4 \
-            -DEBLDR_BUILD_TESTS=OFF
+            -DEBLDR_BUILD_TESTS=OFF \
+            -DEBLDR_ALLOW_DEV_KEY=ON
 
       - name: Build (ARM)
         run: cmake --build build/arm --parallel $(nproc)
@@ -250,7 +254,7 @@ jobs:
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-22.04
-    needs: [test, build-arm, static-analysis]
+    needs: [test, build-arm, fuzz-build, static-analysis]
     if: always()
     steps:
       - uses: actions/checkout@v4

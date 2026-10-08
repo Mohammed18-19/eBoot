@@ -111,11 +111,22 @@ static const uint8_t SIM_CHALLENGE[32] = {
     0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
 };
 
+/* What the simulated OTP holds at the recovery-secret offset. Tests point it
+ * at an unprogrammed pattern to show that such a device authenticates nobody. */
+static const uint8_t *sim_secret = SIM_SHARED_SECRET;
+static const uint8_t SIM_SECRET_ALL_ZERO[32] = { 0 };
+static const uint8_t SIM_SECRET_ALL_ONES[32] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+};
+
 static int sim_otp_read(uint32_t offset, void *buf, size_t len)
 {
     if (offset != 0x180 || len > sizeof(SIM_SHARED_SECRET))
         return EOS_ERR_GENERIC;
-    memcpy(buf, SIM_SHARED_SECRET, len);
+    memcpy(buf, sim_secret, len);
     return EOS_OK;
 }
 
@@ -236,7 +247,123 @@ static void setup(void)
     script_pos = 0;
     out_len = 0;
     verify_payload_bytes_read = 0;
+    sim_secret = SIM_SHARED_SECRET;
     eos_hal_init(&sim_ops);
+}
+
+/* Script the two-packet authentication exchange, computing the response the
+ * way a client that knows `secret` would. */
+static void script_auth(const uint8_t *secret)
+{
+    eos_sha256_ctx_t ctx;
+    uint8_t auth_response[32];
+    eos_sha256_init(&ctx);
+    eos_sha256_update(&ctx, SIM_CHALLENGE, sizeof(SIM_CHALLENGE));
+    eos_sha256_update(&ctx, secret, 32);
+    eos_sha256_final(&ctx, auth_response);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_AUTH, 0, 0, 0);
+    script_append(pkt, sizeof(pkt));           /* -> server sends challenge */
+    put_pkt(pkt, RCVR_CMD_AUTH, 0, 0, 0);
+    script_append(pkt, sizeof(pkt));           /* -> server awaits response */
+    script_append(auth_response, sizeof(auth_response));
+}
+
+/* A device whose recovery secret was never programmed reads its fuses back
+ * as all zeros or all ones. Both are public, so a client that knows nothing
+ * can compute the "right" response. The server must refuse it -- and, having
+ * refused, must still refuse the write that follows. */
+static void check_unprovisioned_secret_is_refused(const uint8_t *pattern)
+{
+    setup();
+    sim_secret = pattern;
+
+    script_auth(pattern);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_WRITE, EOS_SLOT_A, 4, 0);
+    script_append(pkt, sizeof(pkt));
+    uint8_t payload[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    script_append(payload, sizeof(payload));
+
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    /* [0]=ACK, [1..32]=challenge, [33]=auth verdict, [34]=write verdict */
+    ASSERT(out_len >= 35);
+    ASSERT(out_buf[0] == RCVR_ACK);
+    ASSERT(out_buf[33] == RCVR_NACK);
+    ASSERT(out_buf[34] == RCVR_NACK);
+    ASSERT(sim_flash[SIM_SLOT_A_ADDR] == 0xFF);
+}
+
+TEST(test_auth_refuses_an_unprovisioned_secret)
+{
+    check_unprovisioned_secret_is_refused(SIM_SECRET_ALL_ZERO);
+    check_unprovisioned_secret_is_refused(SIM_SECRET_ALL_ONES);
+}
+
+/* The control for the test above: the same exchange with a provisioned
+ * secret authenticates and the write goes through, so the refusal is about
+ * the secret's value and not about the exchange. */
+TEST(test_auth_accepts_a_provisioned_secret)
+{
+    script_auth(SIM_SHARED_SECRET);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_WRITE, EOS_SLOT_A, 4, 0);
+    script_append(pkt, sizeof(pkt));
+    uint8_t payload[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    script_append(payload, sizeof(payload));
+
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    ASSERT(out_len >= 36);
+    ASSERT(out_buf[33] == RCVR_ACK);
+    ASSERT(out_buf[34] == RCVR_ACK);
+    ASSERT(out_buf[35] == RCVR_ACK);
+    ASSERT(memcmp(&sim_flash[SIM_SLOT_A_ADDR], payload, sizeof(payload)) == 0);
+}
+
+/* A board that leaves slot B unmapped reports base 0 for it. The write
+ * handler used to check only offset + len against the slot size, so a
+ * write "at offset 0x800 of slot B" landed at flash address 0x800 -- in
+ * this layout, between the boot-control block and its backup. The shared
+ * range rule refuses an unmapped slot; the handler has to use it. */
+TEST(test_write_refuses_a_slot_the_board_leaves_unmapped)
+{
+    eos_board_ops_t unmapped_b = sim_ops;
+    unmapped_b.slot_b_addr = 0;
+    unmapped_b.slot_b_size = SIM_SLOT_B_SIZE;
+    eos_hal_init(&unmapped_b);
+
+    script_auth(SIM_SHARED_SECRET);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_WRITE, EOS_SLOT_B, 4, 0x800);
+    script_append(pkt, sizeof(pkt));
+    uint8_t payload[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    script_append(payload, sizeof(payload));   /* only consumed if accepted */
+
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    ASSERT(out_len >= 35);
+    ASSERT(out_buf[33] == RCVR_ACK);       /* authenticated */
+    ASSERT(out_buf[34] == RCVR_NACK);      /* write refused */
+    ASSERT(sim_flash[0x800] == 0xFF);
+    ASSERT(sim_flash[0x801] == 0xFF);
 }
 
 TEST(test_write_range_helper_rejects_invalid_bounds)
@@ -322,6 +449,52 @@ TEST(test_write_rejects_offset_past_slot_end)
     ASSERT(memcmp(&sim_flash[SIM_SLOT_A_ADDR], payload, sizeof(payload)) == 0);
 }
 
+/* Without an entropy source there is no challenge worth sending. The old
+ * fallback derived all 32 bytes from the millisecond tick at the moment the
+ * AUTH command was handled, so a client that had captured one (challenge,
+ * response) pair could reset the board and retry -- seeing each challenge
+ * before having to answer it, at no cost in failure count -- until the
+ * captured one came back. No shipped board port provides rng_get, so this is
+ * every board in the tree. The server must refuse the AUTH outright, log why,
+ * and keep refusing the write that follows. */
+TEST(test_auth_refuses_when_the_board_has_no_entropy_source)
+{
+    eos_board_ops_t no_rng = sim_ops;
+    no_rng.rng_get = NULL;
+    eos_hal_init(&no_rng);
+    eos_boot_log_init(0);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_AUTH, 0, 0, 0);
+    script_append(pkt, sizeof(pkt));           /* -> must be refused, not answered */
+    put_pkt(pkt, RCVR_CMD_WRITE, EOS_SLOT_A, 4, 0);
+    script_append(pkt, sizeof(pkt));
+    uint8_t payload[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    script_append(payload, sizeof(payload));   /* only consumed if accepted */
+
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    /* [0]=auth verdict, [1]=write verdict: no 32-byte challenge in between. */
+    ASSERT(out_len >= 2);
+    ASSERT(out_buf[0] == RCVR_NACK);
+    ASSERT(out_buf[1] == RCVR_NACK);
+    ASSERT(sim_flash[SIM_SLOT_A_ADDR] == 0xFF);
+
+    /* The refusal is recorded as EOS_LOG_AUTH_NO_ENTROPY, not as a client
+     * failure, so a field log tells the integrator what is missing. */
+    bool logged = false;
+    for (uint32_t i = 0; i < eos_boot_log_get_head(); i++) {
+        eos_boot_log_entry_t entry;
+        ASSERT(eos_boot_log_read(i, &entry) == EOS_OK);
+        if (entry.event == EOS_LOG_AUTH_NO_ENTROPY) logged = true;
+    }
+    ASSERT(logged);
+}
+
 static void fill_header(eos_image_header_t *hdr, uint32_t image_size)
 {
     memset(hdr, 0, sizeof(*hdr));
@@ -372,12 +545,82 @@ TEST(test_verify_rejects_oversized_image_before_reading_payload)
     ASSERT(verify_payload_bytes_read == 0);
 }
 
+#define RCVR_CMD_INFO 0x02
+#define RCVR_CAP_RNG  0x01
+#define RCVR_CAP_OTP  0x02
+#define INFO_WIRE_LEN 22   /* ack(1) + five uint32 + caps(1), packed */
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Drive RCVR_CMD_INFO -- which needs no authentication -- and decode the
+ * response exactly as tools/uart_recovery.py does. Before the fix the struct was
+ * unpacked (24 bytes, three of padding after ack that nothing wrote) and
+ * sizeof(info) sent all of it, so an unauthenticated caller received three
+ * bytes of whatever the previous call left on the stack, and the client
+ * decoded them as the flash size. out_buf is poisoned first so any byte the
+ * firmware does not write shows as 0xA5 rather than as a lucky zero. */
+TEST(test_info_sends_the_packed_layout_the_client_parses_and_nothing_else)
+{
+    memset(out_buf, 0xA5, sizeof(out_buf));
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_INFO, 0, 0, 0);
+    script_append(pkt, sizeof(pkt));
+
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    ASSERT(out_len == INFO_WIRE_LEN);           /* not 24: no padding on the wire */
+    ASSERT(out_buf[0] == RCVR_ACK);
+    ASSERT(le32(&out_buf[1])  == SIM_FLASH_SIZE);   /* was 0x00A5A5A5 -- the leak */
+    ASSERT(le32(&out_buf[5])  == SIM_SLOT_A_ADDR);
+    ASSERT(le32(&out_buf[9])  == SIM_SLOT_A_SIZE);
+    ASSERT(le32(&out_buf[13]) == SIM_SLOT_B_ADDR);
+    ASSERT(le32(&out_buf[17]) == SIM_SLOT_B_SIZE);
+    ASSERT(out_buf[21] == (RCVR_CAP_RNG | RCVR_CAP_OTP));   /* sim_ops has both */
+    ASSERT(out_buf[22] == 0xA5);                 /* the byte after: untouched */
+}
+
+/* The capability byte is the answer to "why does AUTH always NACK?" on a board
+ * with no entropy source, delivered before the 15 s of backoff it used to cost
+ * to find out. It is derived from the ops table, not configured. */
+TEST(test_info_reports_a_board_without_an_entropy_source)
+{
+    eos_board_ops_t no_rng = sim_ops;
+    no_rng.rng_get = NULL;
+    eos_hal_init(&no_rng);
+
+    uint8_t pkt[8];
+    put_pkt(pkt, RCVR_CMD_INFO, 0, 0, 0);
+    script_append(pkt, sizeof(pkt));
+    eos_bootctl_t bctl;
+    eos_bootctl_init_defaults(&bctl);
+    if (setjmp(exit_jmp) == 0) {
+        eos_recovery_enter(&bctl);
+    }
+
+    ASSERT(out_len == INFO_WIRE_LEN);
+    ASSERT((out_buf[21] & RCVR_CAP_RNG) == 0);
+    ASSERT((out_buf[21] & RCVR_CAP_OTP) != 0);   /* OTP is still there */
+}
+
 int main(void)
 {
     printf("=== test_recovery ===\n");
     run_test_write_range_helper_rejects_invalid_bounds();
     run_test_write_rejects_offset_past_slot_end();
+    run_test_auth_refuses_an_unprovisioned_secret();
+    run_test_auth_accepts_a_provisioned_secret();
+    run_test_write_refuses_a_slot_the_board_leaves_unmapped();
+    run_test_auth_refuses_when_the_board_has_no_entropy_source();
     run_test_verify_rejects_oversized_image_before_reading_payload();
+    run_test_info_sends_the_packed_layout_the_client_parses_and_nothing_else();
+    run_test_info_reports_a_board_without_an_entropy_source();
     printf("%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
 }

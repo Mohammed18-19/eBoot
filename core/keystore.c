@@ -14,24 +14,45 @@
 #include "eos_keystore.h"
 #include "eos_hal.h"
 #include <string.h>
+#ifdef EBLDR_PRODUCTION_KEY
+#include "eos_production_key.h"
+#endif
 
-/* Default development key — REPLACE with production key before deployment.
+/* The compiled-in trust anchor, used when the board has no OTP to read a
+ * key from -- which today is every board under boards/.
  *
- * This is the public half of TEST 1 in RFC 8032 section 7.1. The matching
- * private key is printed in the RFC, so anyone at all can produce a signature
- * that a bootloader trusting this key will accept. It is a usable default for
- * bring-up and for the unit tests, and it must never reach a device.
+ * Without EBLDR_PRODUCTION_KEY it is the public half of TEST 1 in RFC 8032
+ * section 7.1. The matching private key is printed in the RFC, so anyone at
+ * all can produce a signature that a bootloader trusting this key will
+ * accept. It is a usable default for bring-up and for the unit tests, and it
+ * must never reach a device. The #warning below is deliberate: this key going
+ * out silently is the failure mode, so a build that embeds it says so on
+ * every compile.
  *
- * Production builds set EBLDR_PRODUCTION_KEY, which replaces it. The #warning
- * below is deliberate: this key going out silently is the failure mode, so a
- * build that embeds it says so on every compile. */
+ * A production key is supplied at configure time:
+ *
+ *     cmake -B build -DEBLDR_BOARD=<board> -DCMAKE_BUILD_TYPE=Release \
+ *           -DEBLDR_PRODUCTION_KEY=<64 hex characters, the raw Ed25519 public key>
+ *
+ * cmake/ProductionKey.cmake turns that into a generated translation unit
+ * defining ebldr_production_key[] (declared in eos_production_key.h),
+ * compiles it into eboot_core and defines EBLDR_PRODUCTION_KEY, which selects
+ * the #else branch below. A Release build of a real board that sets no key
+ * refuses to configure unless it also sets EBLDR_ALLOW_DEV_KEY=ON, and
+ * .github/workflows/release.yml refuses any artifact that still contains the
+ * development key's bytes. */
 #ifndef EBLDR_PRODUCTION_KEY
 #warning "eBoot: building with the RFC 8032 test-vector public key as the secure-boot trust anchor; define EBLDR_PRODUCTION_KEY for any real device"
+/* RFC 8032 section 7.1, TEST 1, PUBLIC KEY -- all 32 bytes of it. The array
+ * shipped from v0.1.0 to here agreed with the RFC for 21 bytes and then did
+ * not, and the result was not a point on the curve: no signature could ever
+ * verify against it, on any board that fell back to it. See
+ * tests/unit/test_keystore.c::test_compiled_in_anchor_verifies_its_own_rfc_vector. */
 static const uint8_t default_dev_key[EOS_ED25519_PUB_KEY_SIZE] = {
     0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7,
     0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
-    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa3, 0xf4, 0xa1,
-    0x8c, 0x42, 0xc4, 0x76, 0x84, 0x37, 0x77, 0x25,
+    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
+    0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
 };
 #endif
 
@@ -117,7 +138,6 @@ int eos_keystore_init(eos_keystore_t *ks)
 #ifndef EBLDR_PRODUCTION_KEY
         memcpy(ks->slots[0].key, default_dev_key, EOS_ED25519_PUB_KEY_SIZE);
 #else
-        extern const uint8_t ebldr_production_key[EOS_ED25519_PUB_KEY_SIZE];
         memcpy(ks->slots[0].key, ebldr_production_key, EOS_ED25519_PUB_KEY_SIZE);
 #endif
         ks->slots[0].valid = true;

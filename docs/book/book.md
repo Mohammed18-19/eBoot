@@ -1565,13 +1565,18 @@ eos_runtime_get_time(&year, &month, &day, &hour, &min, &sec);
 
 | Option | Default | Description |
 |---|---|---|
-| EBLDR_BOARD | none | Target board name |
-| EBLDR_BUILD_TESTS | OFF | Build unit tests |
-| EBLDR_SECURE_BOOT | OFF | Enable secure boot |
-| EBLDR_MULTICORE | OFF | Enable multicore |
-| EBLDR_RECOVERY | ON | Enable recovery mode |
-| EBLDR_BOOT_MENU | ON | Enable boot menu |
+| EBLDR_BOARD | none | Target board name (`none` builds the native core only) |
+| EBLDR_BUILD_TESTS | OFF | Build unit tests (native only) |
+| EBLDR_VERIFY_STAGE1 | ON | Verify the Stage-1 hash before jumping |
+| EBLDR_HARDENING | ON | Compiler hardening flags |
+| EBLDR_SANITIZE | OFF | ASan/UBSan for host builds |
+| EBLDR_BUILD_FUZZ | OFF | Build libFuzzer targets |
 | CMAKE_TOOLCHAIN_FILE | -- | Toolchain file |
+
+Secure boot and recovery-command authentication are not options: every build
+verifies signatures and authenticates recovery commands. Earlier editions of
+this table listed `EBLDR_SECURE_BOOT`, `EBLDR_MULTICORE`, `EBLDR_RECOVERY` and
+`EBLDR_BOOT_MENU`; none of those has ever existed in `CMakeLists.txt`.
 
 ---
 

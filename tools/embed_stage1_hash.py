@@ -10,13 +10,29 @@
 # Usage:
 #   python embed_stage1_hash.py --input eboot_firmware.bin --output stage1_hash.c
 
-"""Generate the C definitions of the Stage-1 hash and size."""
+"""Generate the C definitions of the Stage-1 hash and size.
+
+The size is checked before anything is hashed. This script used to take
+``os.path.getsize()`` verbatim: when the stage-1 link produced an empty image
+(no ENTRY and no kept vector section, so --gc-sections discarded everything)
+it emitted ``stage1_expected_size = 0u`` and the SHA-256 of the empty string,
+printed both as a normal build line, and stage-0 then "verified" stage-1 by
+hashing zero bytes and jumping. A verification step that cannot run must
+fail, not pass; that starts with the build refusing to describe an image that
+is not there.
+"""
 
 import argparse
 import hashlib
 import os
 import sys
 from pathlib import Path
+
+# A stage-1 that verifies an Ed25519 signature cannot be smaller than the
+# verifier; the stm32f4 image is ~13 KiB at -Os. The floor sits well below
+# that and well above what a link with nothing but a vector table produces
+# (64 bytes), so it separates "built" from "empty or gutted", not "small".
+DEFAULT_MIN_SIZE = 4096
 
 
 def compute_sha256(filepath: Path) -> bytes:
@@ -84,6 +100,13 @@ def main() -> int:
         required=True,
         help="Output C source path (e.g. stage1_hash.c)",
     )
+    parser.add_argument(
+        "--min-size",
+        type=int,
+        default=DEFAULT_MIN_SIZE,
+        help=f"Smallest stage-1 image accepted, in bytes (default {DEFAULT_MIN_SIZE}); "
+             f"an empty image is refused whatever this is set to",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -94,6 +117,16 @@ def main() -> int:
         return 1
 
     size = os.path.getsize(input_path)
+    if size == 0:
+        print(f"Error: {input_path} is empty: there is no stage-1 image to verify. "
+              f"The stage-1 link produced nothing -- check that the board's stage-1 "
+              f"linker script has ENTRY() and keeps the vector section.", file=sys.stderr)
+        return 1
+    if size < args.min_size:
+        print(f"Error: {input_path} is {size} bytes, below the {args.min_size}-byte floor "
+              f"for a stage-1 image; a link that small did not produce the stage it "
+              f"claims to (pass --min-size to change the floor).", file=sys.stderr)
+        return 1
     digest = compute_sha256(input_path)
     source = generate_source(digest, size, input_path.name)
 

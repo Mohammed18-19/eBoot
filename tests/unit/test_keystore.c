@@ -8,7 +8,9 @@
  */
 
 #include "eos_keystore.h"
+#include "eos_crypto_boot.h"
 #include "eos_hal.h"
+#include "../vectors/fw_update_test_sigs.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -263,6 +265,60 @@ TEST(test_revoke_reports_a_failed_persist)
     otp_detach();
 }
 
+/* The compiled-in anchor claims, in a #warning and in comments, to be the
+ * RFC 8032 section 7.1 TEST 1 public key. That claim is what makes it
+ * usable for development at all: the matching secret is printed in the RFC,
+ * so anyone can sign a test image for a board that falls back to it.
+ *
+ * From v0.1.0 the array agreed with the RFC for 21 bytes and then diverged,
+ * and the bytes it held did not decode to a point on the curve. Every
+ * signature check against the fallback failed, and after #104 made signature
+ * verification unconditional at install, firmware update refused every
+ * image on every board without OTP. Nothing noticed because no test ever
+ * asked the fallback key to verify anything.
+ *
+ * This asks. The vector is RFC 8032 TEST 1 itself: empty message, and the
+ * signature the RFC prints for it. On the old bytes eos_ed25519_verify()
+ * returns EOS_ERR_SIGNATURE; the two negative checks after it show the
+ * accept is discriminating, not a verifier that says yes to everything. */
+TEST(test_compiled_in_anchor_verifies_its_own_rfc_vector)
+{
+    static const uint8_t rfc8032_test1_sig[64] = {
+        0xe5,0x56,0x43,0x00,0xc3,0x60,0xac,0x72,0x90,0x86,0xe2,0xcc,0x80,0x6e,0x82,0x8a,
+        0x84,0x87,0x7f,0x1e,0xb8,0xe5,0xd9,0x74,0xd8,0x73,0xe0,0x65,0x22,0x49,0x01,0x55,
+        0x5f,0xb8,0x82,0x15,0x90,0xa3,0x3b,0xac,0xc6,0x1e,0x39,0x70,0x1c,0xf9,0xb4,0x6b,
+        0xd2,0x5b,0xf5,0xf0,0x59,0x5b,0xbe,0x24,0x65,0x51,0x41,0x43,0x8e,0x7a,0x10,0x0b,
+    };
+    const uint8_t *key = NULL;
+    size_t key_len = 0;
+    eos_keystore_t ks;
+
+    otp_detach();               /* no OTP at all: the compiled-in path */
+    ASSERT(eos_keystore_init(&ks) == EOS_OK);
+    ASSERT(eos_keystore_get_active_key(&ks, &key, &key_len) == EOS_OK);
+    ASSERT(key_len == 32);
+
+    /* The bytes are the RFC's bytes, and they verify the RFC's signature.
+     *
+     * The expected key is eos_test_sig_pubkey from the generated fixture
+     * header, not a third hand-typed copy. That public key is derived from
+     * the RFC 8032 secret by tools/gen_fw_update_test_sigs.py and pinned to
+     * that script by tests/unit/test_fw_update_test_sigs.py, so this compares
+     * the compiled-in anchor against a second, independently derived copy of
+     * the same key. */
+    ASSERT(memcmp(key, eos_test_sig_pubkey, 32) == 0);
+    ASSERT(eos_ed25519_verify(rfc8032_test1_sig, key, NULL, 0) == EOS_OK);
+
+    /* Discrimination: the same signature must not verify a different message,
+     * and a bit-flipped signature must not verify the empty one. */
+    const uint8_t other[1] = { 'x' };
+    ASSERT(eos_ed25519_verify(rfc8032_test1_sig, key, other, 1) != EOS_OK);
+    uint8_t flipped[64];
+    memcpy(flipped, rfc8032_test1_sig, 64);
+    flipped[0] ^= 0x01;
+    ASSERT(eos_ed25519_verify(flipped, key, NULL, 0) != EOS_OK);
+}
+
 int main(void)
 {
     printf("=== eBootloader: Keystore Unit Tests ===\n\n");
@@ -276,6 +332,7 @@ int main(void)
     run_test_failed_otp_read_does_not_fall_back_to_the_compiled_key();
     run_test_revocation_is_persisted_without_clobbering_other_slots();
     run_test_revoke_reports_a_failed_persist();
+    run_test_compiled_in_anchor_verifies_its_own_rfc_vector();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

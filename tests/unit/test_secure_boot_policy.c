@@ -128,6 +128,11 @@ static void reset_fixture(void)
     memset(sim_otp, 0, sizeof(sim_otp));
     sim_ops.otp_read = sim_otp_read;
     sim_ops.flash_read = sim_flash_read;
+    /* Step 5b (anti-rollback, #103) reads the image's TLV counter through the
+     * HAL slot that contains it, and an image in no slot is a bad header
+     * before step 7 is ever reached. The staged image is slot A. */
+    sim_ops.slot_a_addr = FLASH_BASE;
+    sim_ops.slot_a_size = FLASH_SIZE;
     if (provide_otp_write) sim_ops.otp_write = sim_otp_write;
     otp_write_rc = EOS_OK;
     otp_write_calls = 0;
@@ -181,7 +186,6 @@ TEST(test_secure_boot_refuses_when_the_debug_lock_cannot_be_taken)
 
     eos_secure_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.slot_size         = FLASH_SIZE;
     cfg.image_addr        = FLASH_BASE;
     cfg.require_signature = false;
     cfg.require_encryption = false;
@@ -202,7 +206,6 @@ TEST(test_the_same_image_boots_when_no_debug_lock_is_asked_for)
 
     eos_secure_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.slot_size         = FLASH_SIZE;
     cfg.image_addr        = FLASH_BASE;
     cfg.require_signature = false;
     cfg.require_encryption = false;
@@ -222,7 +225,6 @@ TEST(test_secure_boot_proceeds_when_the_debug_lock_succeeds)
 
     eos_secure_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.slot_size         = FLASH_SIZE;
     cfg.image_addr        = FLASH_BASE;
     cfg.require_signature = false;
     cfg.require_encryption = false;
@@ -240,7 +242,10 @@ TEST(test_secure_boot_proceeds_when_the_debug_lock_succeeds)
  * over the header prefix checked against the keystore anchor. A fixture for
  * that is buildable -- the keystore ships RFC 8032 TEST 1's public key and
  * the matching private key is in the RFC -- but the machinery for it belongs
- * to #88 (tools/gen_signed_image_fixture.py), not here.
+ * to #88 (tools/gen_signed_image_fixture.py), not here. (When this note was
+ * first written the shipped key was *not* that key -- it was off the curve
+ * from byte 21 on, so no such fixture could have verified; that is fixed in
+ * core/keystore.c and pinned by test_keystore.c.)
  *
  * I wrote the obvious test first and it was worthless: with
  * require_signature = true and an unsigned fixture the boot fails at step 3,
@@ -260,7 +265,6 @@ TEST(test_the_ordinary_boot_path_is_unaffected_by_the_step_4_change)
 
     eos_secure_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.slot_size         = FLASH_SIZE;
     cfg.image_addr        = FLASH_BASE;
     cfg.require_signature = false;
     cfg.lock_debug        = false;
