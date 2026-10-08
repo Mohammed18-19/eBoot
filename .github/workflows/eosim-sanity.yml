@@ -42,7 +42,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install EoSim
-        run: git clone --depth 1 --branch v${{ env.EOSIM_VERSION }} https://github.com/embeddedos-org/EoSim.git /tmp/EoSim && pip install /tmp/EoSim
+        uses: embeddedos-org/.github/.github/actions/install-eosim@master
+        with:
+          version: ${{ env.EOSIM_VERSION }}
       - name: Verify installation
         run: |
           # Assert the installed package version matches the pinned tag.
@@ -98,12 +100,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install EoSim
-        run: |
-          # Install from a git checkout: no release ships a wheel.
-          git clone --depth 1 --branch v${{ env.EOSIM_VERSION }} \
-            https://github.com/embeddedos-org/EoSim.git /tmp/EoSim
-          pip install /tmp/EoSim
-          # (platforms ship in-package since v3.0.2; no copy needed)
+        uses: embeddedos-org/.github/.github/actions/install-eosim@master
+        with:
+          version: ${{ env.EOSIM_VERSION }}
       - name: Simulate ${{ matrix.platform }}
         # Two honest contracts, by engine (EoSim 4db3434a fixed #38):
         # - native engine: `eosim run` without --firmware exits 2 with
@@ -155,9 +154,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install EoSim
-        run: |
-          git clone --depth 1 --branch v${{ env.EOSIM_VERSION }} https://github.com/embeddedos-org/EoSim.git /tmp/EoSim && pip install /tmp/EoSim
-          # (platforms ship in-package since v3.0.2; no copy needed)
+        uses: embeddedos-org/.github/.github/actions/install-eosim@master
+        with:
+          version: ${{ env.EOSIM_VERSION }}
       - name: Boot guest and test EoSim inside
         # Same engine contracts as nested-simulation (see above).
         # The x86_64 guest is a qemu-engine platform: assert the
@@ -192,10 +191,13 @@ jobs:
       # `eosim list` exits 0 with zero platforms, so "list && doctor" passed
       # on both these runners while validating nothing. Assert a non-zero
       # platform count from the in-package tree, as install-validate does.
+      - name: Install EoSim
+        uses: embeddedos-org/.github/.github/actions/install-eosim@master
+        with:
+          version: ${{ env.EOSIM_VERSION }}
       - name: Test EoSim on Windows
         shell: bash
         run: |
-          git clone --depth 1 --branch v${{ env.EOSIM_VERSION }} https://github.com/embeddedos-org/EoSim.git /tmp/EoSim && pip install /tmp/EoSim
           eosim --version
           eosim doctor
           python -c "
@@ -216,10 +218,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install EoSim
+        uses: embeddedos-org/.github/.github/actions/install-eosim@master
+        with:
+          version: ${{ env.EOSIM_VERSION }}
       - name: Test EoSim on macOS
         shell: bash
         run: |
-          git clone --depth 1 --branch v${{ env.EOSIM_VERSION }} https://github.com/embeddedos-org/EoSim.git /tmp/EoSim && pip install /tmp/EoSim
           eosim --version
           eosim doctor
           python -c "
